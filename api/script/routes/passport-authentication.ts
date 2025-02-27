@@ -611,12 +611,21 @@ export class PassportAuthentication {
           return res.status(400).json({ error: "Email not found in token" });
         }
 
-        const user = await this._storageInstance.getAccountByEmail(decodedToken.email);
+        // Verifica se o usuário já existe
+        let user = await this._storageInstance.getAccountByEmail(decodedToken.email);
+        let accountId: string;
 
+        // Se não existir, cria o usuário
         if (!user) {
-          return res.status(403).json({ error: "User not registered. Please sign up first." });
+          accountId = await this._storageInstance.addAccount({
+            createdTime: Date.now(),
+            email: decodedToken.email,
+            name: decodedToken.name ?? "Unknown User",
+          });
+          user = await this._storageInstance.getAccount(accountId);
         }
 
+        // Gera a chave de sessão
         const now = Date.now();
         const friendlyName = `Login-${now}`;
         const accessKey = {
@@ -634,8 +643,8 @@ export class PassportAuthentication {
 
         return res.json({
           accessKey: sessionKey,
-          name: decodedToken.name,
-          email: decodedToken.email,
+          name: decodedToken.name ?? user.name,
+          email: user.email,
         });
       } catch (error) {
         console.error("Login error:", error);

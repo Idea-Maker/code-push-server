@@ -255,13 +255,9 @@ export class AzureStorage implements storage.Storage {
       .then(() => {
         return this.retrieveByKey(address.partitionKeyPointer, address.rowKeyPointer);
       })
-      .catch((azureError: any): any => {
-        AzureStorage.azureErrorHandler(
-          azureError,
-          true,
-          "ResourceNotFound",
-          "The specified e-mail address doesn't represent a registered user"
-        );
+      .catch((error): any => {
+        console.log(error)
+        return null;
       });
   }
 
@@ -1094,7 +1090,7 @@ export class AzureStorage implements storage.Storage {
 
         return q.allSettled(removalPromises);
       })
-      .then(() => { });
+      .then(() => {});
   }
 
   private updateAppWithPermission(accountId: string, app: storage.App, updateCollaborator: boolean = false): q.Promise<void> {
@@ -1176,8 +1172,9 @@ export class AzureStorage implements storage.Storage {
       queryOptions: { filter: query },
     })) {
       if (entity.partitionKeyPointer && entity.partitionKeyPointer !== "" && entity.rowKeyPointer && entity.rowKeyPointer !== "") {
-        const childQuery = odata`PartitionKey eq ${entity.partitionKeyPointer} and (RowKey eq ${entity.rowKeyPointer
-          } or (RowKey gt ${childrenSearchKey} and RowKey lt ${childrenSearchKey + "~"}))`;
+        const childQuery = odata`PartitionKey eq ${entity.partitionKeyPointer} and (RowKey eq ${
+          entity.rowKeyPointer
+        } or (RowKey gt ${childrenSearchKey} and RowKey lt ${childrenSearchKey + "~"}))`;
 
         promises.push(this.getLeafEntities(childQuery, childrenSearchKey));
       } else {
@@ -1221,8 +1218,9 @@ export class AzureStorage implements storage.Storage {
     }
 
     // Fetch both the parent (for error-checking purposes) and the direct children
-    const query = odata`PartitionKey eq ${partitionKey} and (RowKey eq ${rowKey} or (RowKey gt ${childrenSearchKey} and RowKey lt ${childrenSearchKey + "~"
-      }))`;
+    const query = odata`PartitionKey eq ${partitionKey} and (RowKey eq ${rowKey} or (RowKey gt ${childrenSearchKey} and RowKey lt ${
+      childrenSearchKey + "~"
+    }))`;
 
     const entities: TableEntity[] = await this.getLeafEntities(query, childrenSearchKey);
 
