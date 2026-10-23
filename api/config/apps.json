@@ -1,0 +1,88 @@
+{
+  "apps": [
+    {
+      "id": "apcapdobem",
+      "name": "H App do Bem",
+      "project": "WL",
+      "androidPackage": "br.com.ideamaker.apcapdobem",
+      "iosAppId": "1387709116"
+    },
+    {
+      "id": "centrooeste",
+      "name": "Centro Oeste Cap",
+      "project": "WL",
+      "androidPackage": "com.ideamaker.centrooeste",
+      "iosAppId": "1489717528"
+    },
+    {
+      "id": "hipercapbrasil",
+      "name": "HiperXCAP",
+      "project": "WL",
+      "androidPackage": "br.com.ideamaker.hipercapbrasil",
+      "iosAppId": "6471998979"
+    },
+    {
+      "id": "hipercaplitoral",
+      "name": "Vale Cap Litoral",
+      "project": "WL",
+      "androidPackage": "br.com.ideamaker.caplegallitoral",
+      "iosAppId": "1396305698"
+    },
+    {
+      "id": "hsaudebauru",
+      "name": "Hiper Saúde Bauru",
+      "project": "WL",
+      "androidPackage": "com.ideamaker.hsaudebauru",
+      "iosAppId": "1462755970"
+    },
+    {
+      "id": "hsauderibeirao",
+      "name": "Hiper Saúde Ribeirão",
+      "project": "WL",
+      "androidPackage": "com.ideamaker.hsauderibeirao",
+      "iosAppId": "1489717725"
+    },
+    {
+      "id": "mscap",
+      "name": "MS Cap",
+      "project": "WL",
+      "androidPackage": "com.ideamaker.mscap",
+      "iosAppId": "1548493242"
+    },
+    {
+      "id": "riopreto",
+      "name": "Saúde Cap",
+      "project": "WL",
+      "androidPackage": "com.ideamaker.riopreto",
+      "iosAppId": "1489717728"
+    },
+    {
+      "id": "spcap",
+      "name": "SP Cap",
+      "project": "WL",
+      "androidPackage": "com.ideamaker.spcap",
+      "iosAppId": "1462757730"
+    },
+    {
+      "id": "valecap",
+      "name": "Vale Cap",
+      "project": "WL",
+      "androidPackage": "com.ideamaker.valecap",
+      "iosAppId": "1454280541"
+    },
+    {
+      "id": "vidacap",
+      "name": "Vida Cap",
+      "project": "WL",
+      "androidPackage": "com.ideamaker.vidacap",
+      "iosAppId": "1461494154"
+    },
+    {
+      "id": "apcapsp",
+      "name": "Apcap da Sorte",
+      "project": "ADS",
+      "androidPackage": "br.com.apcapsp.app",
+      "iosAppId": "1444105915"
+    }
+  ]
+}

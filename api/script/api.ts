@@ -6,6 +6,7 @@ import { Router, RequestHandler } from "express";
 import { getHeadersMiddleware, HeadersConfig } from "./routes/headers";
 import { getAcquisitionRouter, getHealthRouter, AcquisitionConfig } from "./routes/acquisition";
 import { getManagementRouter, ManagementConfig } from "./routes/management";
+import { getPublishingRouter } from "./routes/publishing";
 import { PassportAuthentication, AuthenticationConfig } from "./routes/passport-authentication";
 import { AppInsights } from "./routes/app-insights";
 import { InputSanitizer } from "./routes/input-sanitizer";
@@ -25,6 +26,10 @@ export function health(config: AcquisitionConfig): Router {
 
 export function management(config: ManagementConfig): Router {
   return getManagementRouter(config);
+}
+
+export function publishing(): Router {
+  return getPublishingRouter();
 }
 
 export function auth(config: AuthenticationConfig): any {

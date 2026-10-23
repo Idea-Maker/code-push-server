@@ -1,0 +1,144 @@
+{
+  "apps": [
+    {
+      "id": "nome-01",
+      "name": "Nome do Aplicativo 01",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome01",
+      "iosAppId": "1000000001"
+    },
+    {
+      "id": "nome-02",
+      "name": "Nome do Aplicativo 02",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome02",
+      "iosAppId": "1000000002"
+    },
+    {
+      "id": "nome-03",
+      "name": "Nome do Aplicativo 03",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome03",
+      "iosAppId": "1000000003"
+    },
+    {
+      "id": "nome-04",
+      "name": "Nome do Aplicativo 04",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome04",
+      "iosAppId": "1000000004"
+    },
+    {
+      "id": "nome-05",
+      "name": "Nome do Aplicativo 05",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome05",
+      "iosAppId": "1000000005"
+    },
+    {
+      "id": "nome-06",
+      "name": "Nome do Aplicativo 06",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome06",
+      "iosAppId": "1000000006"
+    },
+    {
+      "id": "nome-07",
+      "name": "Nome do Aplicativo 07",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome07",
+      "iosAppId": "1000000007"
+    },
+    {
+      "id": "nome-08",
+      "name": "Nome do Aplicativo 08",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome08",
+      "iosAppId": "1000000008"
+    },
+    {
+      "id": "nome-09",
+      "name": "Nome do Aplicativo 09",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome09",
+      "iosAppId": "1000000009"
+    },
+    {
+      "id": "nome-10",
+      "name": "Nome do Aplicativo 10",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome10",
+      "iosAppId": "1000000010"
+    },
+    {
+      "id": "nome-11",
+      "name": "Nome do Aplicativo 11",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome11",
+      "iosAppId": "1000000011"
+    },
+    {
+      "id": "nome-12",
+      "name": "Nome do Aplicativo 12",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome12",
+      "iosAppId": "1000000012"
+    },
+    {
+      "id": "nome-13",
+      "name": "Nome do Aplicativo 13",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome13",
+      "iosAppId": "1000000013"
+    },
+    {
+      "id": "nome-14",
+      "name": "Nome do Aplicativo 14",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome14",
+      "iosAppId": "1000000014"
+    },
+    {
+      "id": "nome-15",
+      "name": "Nome do Aplicativo 15",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome15",
+      "iosAppId": "1000000015"
+    },
+    {
+      "id": "nome-16",
+      "name": "Nome do Aplicativo 16",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome16",
+      "iosAppId": "1000000016"
+    },
+    {
+      "id": "nome-17",
+      "name": "Nome do Aplicativo 17",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome17",
+      "iosAppId": "1000000017"
+    },
+    {
+      "id": "nome-18",
+      "name": "Nome do Aplicativo 18",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome18",
+      "iosAppId": "1000000018"
+    },
+    {
+      "id": "nome-19",
+      "name": "Nome do Aplicativo 19",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome19",
+      "iosAppId": "1000000019"
+    },
+    {
+      "id": "nome-20",
+      "name": "Nome do Aplicativo 20",
+      "project": "WL",
+      "androidPackage": "com.exemplo.nome20",
+      "iosAppId": "1000000020"
+    }
+  ]
+}

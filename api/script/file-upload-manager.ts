@@ -4,7 +4,7 @@
 import * as express from "express";
 import multer = require("multer");
 
-const UPLOAD_SIZE_LIMIT_MB: number = parseInt(process.env.UPLOAD_SIZE_LIMIT_MB) || 200;
+const UPLOAD_SIZE_LIMIT_MB: number = parseInt(process.env.UPLOAD_SIZE_LIMIT_MB ?? "200") || 200;
 
 function getAttachUploadFileFunction(maxFileSizeMb: number): express.RequestHandler {
   return multer({
@@ -32,7 +32,7 @@ export function fileUploadMiddleware(req: express.Request, res: express.Response
   });
 }
 
-export function getFileWithField(req: Express.Request, field: string): Express.Multer.File {
+export function getFileWithField(req: Express.Request, field: string): Express.Multer.File | null {
   for (const i in req.files) {
     if (req.files[i].fieldname === field) {
       return req.files[i];

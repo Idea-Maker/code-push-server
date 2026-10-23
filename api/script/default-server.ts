@@ -16,11 +16,6 @@ const domain = require("express-domain-middleware");
 import * as express from "express";
 import * as q from "q";
 
-interface Secret {
-  id: string;
-  value: string;
-}
-
 function bodyParserErrorHandler(err: any, req: express.Request, res: express.Response, next: Function): void {
   if (err) {
     if (err.message === "invalid json" || (err.name === "SyntaxError" && ~err.stack.indexOf("body-parser"))) {
@@ -161,6 +156,7 @@ export function start(done: (err?: any, server?: express.Express, storage?: Stor
           app.use(auth.router());
         }
         app.use(auth.authenticate, fileUploadMiddleware, api.management({ storage: storage, redisManager: redisManager }));
+        app.use("/publishing", auth.authenticate, api.publishing());
       } else {
         app.use(auth.legacyRouter());
       }
