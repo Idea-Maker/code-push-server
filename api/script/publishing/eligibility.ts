@@ -1,6 +1,7 @@
 import type { ActionName, ActionTarget, BoardApp, Cell, Platform, SkippedTarget } from "./types";
 
 export function isEligible(item: Cell, action: ActionName, explicit: boolean): boolean {
+  if (action === "prepare") return item.platform === "ios" && item.canPrepare;
   if (action === "review") {
     if (item.canReview) return true;
     return explicit && item.status === "rejeitada";

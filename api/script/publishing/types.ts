@@ -1,6 +1,6 @@
 export type Platform = "android" | "ios";
 
-export type ActionName = "review" | "release" | "halt";
+export type ActionName = "prepare" | "review" | "release" | "halt";
 
 export type CellStatus =
   | "indisponivel"
@@ -31,6 +31,7 @@ export type Cell = {
   label: string;
   detail: string;
   version: string;
+  canPrepare: boolean;
   canReview: boolean;
   canRelease: boolean;
   canHalt: boolean;
@@ -70,4 +71,28 @@ export type ActionResult = {
   platform: Platform;
   ok: boolean;
   message: string;
+};
+
+export type IosPrepareChoice = {
+  appId: string;
+  versionString: string;
+  buildId: string;
+};
+
+export type IosBuildOption = {
+  id: string;
+  buildNumber: string;
+  marketingVersion: string | null;
+  processingState: string;
+  label: string;
+};
+
+export type IosPrepareOptions = {
+  appId: string;
+  appName: string;
+  liveVersion: string | null;
+  draftVersion: string | null;
+  suggestedVersion: string | null;
+  suggestedBuildId: string | null;
+  builds: IosBuildOption[];
 };

@@ -1,14 +1,14 @@
 import { recordResult, readAudit, type AuditEntry } from "./audit";
 import { cell, decorate, unavailable } from "./cells";
 import { hasAppleCredentials, hasPlayCredentials, loadApps, storeMode } from "./config";
-import { applyDemo, demoApps, resetDemo, stampDemoError } from "./demo";
+import { applyDemo, demoApps, demoPrepareOptions, resetDemo, stampDemoError } from "./demo";
 import { describeError, HttpError } from "./errors";
 import { logger } from "./logger";
 import { platformName, preview } from "./eligibility";
-import { haltIos, readIos, releaseIos, reviewIos } from "./appstore";
+import { haltIos, listIosPrepareOptions, prepareIos, readIos, releaseIos, reviewIos } from "./appstore";
 import { haltAndroid, readAndroid, releaseAndroid, reviewAndroid } from "./play";
 import { mapPool } from "./pool";
-import type { ActionName, ActionResult, BoardApp, Cell } from "./types";
+import type { ActionName, ActionResult, BoardApp, Cell, IosPrepareChoice, IosPrepareOptions } from "./types";
 
 const cache = new Map<string, BoardApp>();
 let lastRefresh: string | null = null;
@@ -51,12 +51,26 @@ export async function refreshApps(ids?: string[]): Promise<BoardApp[]> {
   return listApps();
 }
 
+export async function getIosPrepareOptions(appId: string): Promise<IosPrepareOptions> {
+  const app = loadApps().find((item) => item.id === appId);
+  if (!app) throw new HttpError(404, "App não encontrado.");
+  if (!app.iosAppId) throw new HttpError(400, "App sem iosAppId.");
+  if (storeMode() === "demo") return demoPrepareOptions(app);
+  if (!hasAppleCredentials()) throw new HttpError(400, "Defina a chave da App Store Connect API.");
+  try {
+    return await listIosPrepareOptions(app);
+  } catch (error) {
+    throw new HttpError(502, describeError(error));
+  }
+}
+
 export async function runAction(input: {
   action: ActionName;
   appIds: string[] | "all";
   platforms?: "android" | "ios" | "both";
   androidFraction?: number;
   releaseNotes?: string;
+  iosPrepare?: IosPrepareChoice[];
 }): Promise<{
   results: ActionResult[];
   apps: BoardApp[];
@@ -69,6 +83,9 @@ export async function runAction(input: {
   if (plan.included.length === 0) {
     throw new HttpError(400, "Nenhuma plataforma elegível para esta ação.");
   }
+  const prepareByApp = new Map(
+    (input.iosPrepare ?? []).map((item) => [item.appId, item] as const),
+  );
 
   const results = await mapPool(plan.included, 3, async (target) => {
     const app = loadApps().find((item) => item.id === target.appId);
@@ -77,10 +94,18 @@ export async function runAction(input: {
       return failure(target.appId, target.appName, target.platform, "App sumiu da configuração.");
     }
     try {
+      const prepareChoice = prepareByApp.get(target.appId);
       const message =
         storeMode() === "demo"
-          ? applyDemo(current, target.platform, input.action, input.androidFraction)
-          : await liveAction(app, target.platform, input.action, input.androidFraction, input.releaseNotes);
+          ? applyDemo(current, target.platform, input.action, input.androidFraction, prepareChoice)
+          : await liveAction(
+              app,
+              target.platform,
+              input.action,
+              input.androidFraction,
+              input.releaseNotes,
+              prepareChoice,
+            );
       const result: ActionResult = {
         appId: target.appId,
         appName: target.appName,
@@ -130,11 +155,21 @@ async function liveAction(
   action: ActionName,
   androidFraction?: number,
   releaseNotes?: string,
+  iosPrepare?: IosPrepareChoice,
 ) {
   if (platform === "android") {
+    if (action === "prepare") throw new Error("Preparar versão só existe no iOS.");
     if (action === "review") return reviewAndroid(app, androidFraction, releaseNotes);
     if (action === "release") return releaseAndroid(app, androidFraction);
     return haltAndroid(app);
+  }
+  if (action === "prepare") {
+    return prepareIos(
+      app,
+      iosPrepare
+        ? { versionString: iosPrepare.versionString, buildId: iosPrepare.buildId }
+        : undefined,
+    );
   }
   if (action === "review") return reviewIos(app, releaseNotes);
   if (action === "release") return releaseIos(app);

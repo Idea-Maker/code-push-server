@@ -1,11 +1,19 @@
 import { Request, Response, Router } from "express";
 
-import { audit, listApps, refreshApps, refreshedAt, resetDemoBoard, runAction } from "../publishing/board";
+import {
+  audit,
+  getIosPrepareOptions,
+  listApps,
+  refreshApps,
+  refreshedAt,
+  resetDemoBoard,
+  runAction,
+} from "../publishing/board";
 import { defaultReleaseNotes, reviewFraction, storeMode } from "../publishing/config";
 import { HttpError } from "../publishing/errors";
 import { preview } from "../publishing/eligibility";
 import { logger } from "../publishing/logger";
-import { ActionName } from "../publishing/types";
+import { ActionName, IosPrepareChoice } from "../publishing/types";
 
 export function getPublishingRouter(): Router {
   const router = Router();
@@ -51,6 +59,16 @@ export function getPublishingRouter(): Router {
     }
   });
 
+  router.get("/apps/:appId/ios/prepare-options", async (req: Request, res: Response, next: Function): Promise<void> => {
+    try {
+      const appId = typeof req.params.appId === "string" ? req.params.appId : "";
+      if (!appId) throw new HttpError(400, "Informe o app.");
+      res.json(await getIosPrepareOptions(appId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/act", async (req: Request, res: Response, next: Function): Promise<void> => {
     try {
       const action = parseAction(req.body?.action);
@@ -60,6 +78,7 @@ export function getPublishingRouter(): Router {
         platforms: parsePlatforms(req.body?.platforms),
         androidFraction: parseAndroidFraction(req.body?.androidFraction, action),
         releaseNotes: parseReleaseNotes(req.body?.releaseNotes, action),
+        iosPrepare: parseIosPrepare(req.body?.iosPrepare, action),
       });
       res.json({
         ...outcome,
@@ -105,7 +124,7 @@ function payload(apps: ReturnType<typeof listApps> = listApps()) {
 }
 
 function parseAction(value: unknown): ActionName {
-  if (value === "review" || value === "release" || value === "halt") return value;
+  if (value === "prepare" || value === "review" || value === "release" || value === "halt") return value;
   throw new HttpError(400, "Ação inválida.");
 }
 
@@ -138,4 +157,29 @@ function parseIds(value: unknown): string[] | "all" {
   if (value === "all") return "all";
   if (Array.isArray(value) && value.every((item) => typeof item === "string")) return value;
   throw new HttpError(400, 'Informe appIds como "all" ou uma lista de ids.');
+}
+
+function parseIosPrepare(value: unknown, action: ActionName): IosPrepareChoice[] | undefined {
+  if (action !== "prepare" || value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new HttpError(400, "iosPrepare precisa ser uma lista.");
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object") {
+      throw new HttpError(400, `iosPrepare[${index}] inválido.`);
+    }
+    const row = item as Record<string, unknown>;
+    if (typeof row.appId !== "string" || !row.appId.trim()) {
+      throw new HttpError(400, `iosPrepare[${index}].appId é obrigatório.`);
+    }
+    if (typeof row.versionString !== "string" || !row.versionString.trim()) {
+      throw new HttpError(400, `Informe a versão do rascunho para ${row.appId}.`);
+    }
+    if (typeof row.buildId !== "string" || !row.buildId.trim()) {
+      throw new HttpError(400, `Escolha o build para ${row.appId}.`);
+    }
+    return {
+      appId: row.appId.trim(),
+      versionString: row.versionString.trim(),
+      buildId: row.buildId.trim(),
+    };
+  });
 }

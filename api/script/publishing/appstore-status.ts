@@ -43,6 +43,21 @@ export function marketingVersion(value: string | null | undefined): string | nul
   return /^\d+\.\d+/.test(text) ? text : null;
 }
 
+export function findPreparingDraft(
+  versions: readonly IosVersionCandidate[],
+  liveName: string | null,
+): IosVersionCandidate | null {
+  return (
+    versions.find((item) => {
+      if (!item.appStoreState || !PREPARING.has(item.appStoreState)) return false;
+      const name = marketingVersion(item.versionString);
+      if (!name) return false;
+      if (liveName && compareVersions(name, liveName) <= 0) return false;
+      return true;
+    }) ?? null
+  );
+}
+
 export function pickStoreVersion(versions: readonly IosVersionCandidate[]): IosVersionCandidate | null {
   const live = versions.find((item) => item.appStoreState === "READY_FOR_SALE");
   const liveName = marketingVersion(live?.versionString);
@@ -63,17 +78,11 @@ export function pickStoreVersion(versions: readonly IosVersionCandidate[]): IosV
     (item) => item.appStoreState && IN_FLIGHT.has(item.appStoreState) && marketingVersion(item.versionString),
   );
   if (inFlight) return inFlight;
-  if (live) return live;
 
-  return (
-    versions.find((item) => {
-      if (!item.appStoreState || !PREPARING.has(item.appStoreState)) return false;
-      const name = marketingVersion(item.versionString);
-      if (!name) return false;
-      if (liveName && compareVersions(name, liveName) <= 0) return false;
-      return true;
-    }) ?? null
-  );
+  const preparing = findPreparingDraft(versions, liveName);
+  if (preparing) return preparing;
+  if (live) return live;
+  return null;
 }
 
 export function phasedPercent(day: number | null): number | null {
@@ -97,19 +106,29 @@ export function mapIosStatus(input: {
   phasedReleaseState?: string | null;
   currentDayNumber?: number | null;
   liveVersionString?: string | null;
+  pendingDraftVersion?: string | null;
+  pendingDraftBuildState?: BuildState | null;
+  pendingBuildLabel?: string | null;
 }): Cell {
   if (!input.configured) return unavailable("ios", "Este app não tem iosAppId.");
 
   const version = iosVersion(input);
+  const pending = pendingFlags(input);
+
   if (!input.appStoreState) {
-    const pending = mapBuildOnly(input.buildVersion, input.buildState, input.appVersion ?? null);
+    const pendingOnly = mapBuildOnly(input.buildVersion, input.buildState, input.appVersion ?? null);
     if (input.liveVersionString && input.buildState === "valid" && input.buildVersion) {
       return {
-        ...pending,
-        detail: `Build ${input.buildVersion} ainda não foi submetido. No ar: ${input.liveVersionString}.`,
+        ...pendingOnly,
+        canPrepare: true,
+        canReview: false,
+        detail: `Build ${formatAppBuild(input.appVersion, input.buildVersion)} ainda não foi submetido. No ar: ${input.liveVersionString}. Use Preparar versão.`,
       };
     }
-    return pending;
+    if (input.buildState === "valid") {
+      return { ...pendingOnly, canPrepare: true, canReview: false, detail: "Build pronto. Use Preparar versão." };
+    }
+    return pendingOnly;
   }
 
   if (input.appStoreState === "PROCESSING_FOR_DISTRIBUTION") {
@@ -118,13 +137,18 @@ export function mapIosStatus(input: {
       status: "em_revisao",
       version,
       label: "Liberando",
-      detail: "A Apple está disponibilizando a versão.",
+      detail: appendPending("A Apple está disponibilizando a versão.", pending),
+      canPrepare: pending.canPrepare,
+      canReview: pending.canReview,
     });
   }
 
   if (input.appStoreState === "READY_FOR_SALE") {
     if (input.phasedReleaseState === "ACTIVE") {
       const percent = phasedPercent(input.currentDayNumber ?? null);
+      const baseDetail = percent
+        ? `Disponível para ${percent}% dos usuários. Liberar encerra o faseado e vai para 100%.`
+        : "Liberar encerra o faseado e vai para 100%. Pausar interrompe.";
       return cell({
         platform: "ios",
         status: "aprovada",
@@ -133,9 +157,9 @@ export function mapIosStatus(input: {
         canRelease: true,
         canHalt: true,
         inRollout: true,
-        detail: percent
-          ? `Disponível para ${percent}% dos usuários. Liberar encerra o faseado e vai para 100%.`
-          : "Liberar encerra o faseado e vai para 100%. Pausar interrompe.",
+        canPrepare: pending.canPrepare,
+        canReview: pending.canReview,
+        detail: appendPending(baseDetail, pending),
       });
     }
     if (input.phasedReleaseState === "PAUSED") {
@@ -144,10 +168,20 @@ export function mapIosStatus(input: {
         status: "pausada",
         version,
         canRelease: true,
-        detail: "Faseado pausado. Só entra em Liberar se o aplicativo estiver marcado.",
+        canPrepare: pending.canPrepare,
+        canReview: pending.canReview,
+        detail: appendPending("Faseado pausado. Só entra em Liberar se o aplicativo estiver marcado.", pending),
       });
     }
-    return cell({ platform: "ios", status: "liberada", version, label: "No ar" });
+    return cell({
+      platform: "ios",
+      status: "liberada",
+      version,
+      label: "No ar",
+      canPrepare: pending.canPrepare,
+      canReview: pending.canReview,
+      detail: appendPending("", pending) || undefined,
+    });
   }
 
   if (input.appStoreState === "PENDING_DEVELOPER_RELEASE") {
@@ -157,7 +191,9 @@ export function mapIosStatus(input: {
       version,
       label: "Aprovada",
       canRelease: true,
-      detail: "A Apple aprovou. Liberar começa o faseado de 7 dias.",
+      canPrepare: pending.canPrepare,
+      canReview: pending.canReview,
+      detail: appendPending("A Apple aprovou. Liberar começa o faseado de 7 dias.", pending),
     });
   }
 
@@ -167,7 +203,9 @@ export function mapIosStatus(input: {
       status: "em_revisao",
       version,
       label: "Aguardando a Apple",
-      detail: "A versão foi aprovada e a Apple ainda vai soltar.",
+      canPrepare: pending.canPrepare,
+      canReview: pending.canReview,
+      detail: appendPending("A versão foi aprovada e a Apple ainda vai soltar.", pending),
     });
   }
 
@@ -177,9 +215,14 @@ export function mapIosStatus(input: {
       platform: "ios",
       status: "em_revisao",
       version,
-      detail: automatic
-        ? "Na fila. Esta versão está marcada para sair sozinha quando a Apple aprovar."
-        : "Na fila da Apple.",
+      canPrepare: pending.canPrepare,
+      canReview: pending.canReview,
+      detail: appendPending(
+        automatic
+          ? "Na fila. Esta versão está marcada para sair sozinha quando a Apple aprovar."
+          : "Na fila da Apple.",
+        pending,
+      ),
     });
   }
 
@@ -222,6 +265,16 @@ export function mapIosStatus(input: {
         detail: "O último build falhou no processamento.",
       });
     }
+    if (input.buildState === "none") {
+      return cell({
+        platform: "ios",
+        status: "sem_build",
+        version,
+        label: "Sem build selecionado",
+        canPrepare: true,
+        detail: "Rascunho sem build. Use Preparar versão para escolher o build do CI.",
+      });
+    }
     return cell({
       platform: "ios",
       status: "pronta",
@@ -235,8 +288,53 @@ export function mapIosStatus(input: {
     platform: "ios",
     status: "em_revisao",
     version,
-    detail: `Estado ${input.appStoreState} no App Store Connect.`,
+    canPrepare: pending.canPrepare,
+    canReview: pending.canReview,
+    detail: appendPending(`Estado ${input.appStoreState} no App Store Connect.`, pending),
   });
+}
+
+function pendingFlags(input: {
+  pendingDraftVersion?: string | null;
+  pendingDraftBuildState?: BuildState | null;
+  pendingBuildLabel?: string | null;
+}): { canPrepare: boolean; canReview: boolean; note: string } {
+  if (input.pendingDraftVersion) {
+    const draftState = input.pendingDraftBuildState ?? "none";
+    if (draftState === "valid") {
+      return {
+        canPrepare: false,
+        canReview: true,
+        note: `Rascunho ${input.pendingDraftVersion} pronto para revisão.`,
+      };
+    }
+    if (draftState === "none" || draftState === "processing") {
+      return {
+        canPrepare: true,
+        canReview: false,
+        note: `Rascunho ${input.pendingDraftVersion} sem build selecionado. Use Preparar versão.`,
+      };
+    }
+    return {
+      canPrepare: false,
+      canReview: false,
+      note: `Rascunho ${input.pendingDraftVersion} com build inválido.`,
+    };
+  }
+  if (input.pendingBuildLabel) {
+    return {
+      canPrepare: true,
+      canReview: false,
+      note: `Build ${input.pendingBuildLabel} disponível. Use Preparar versão.`,
+    };
+  }
+  return { canPrepare: false, canReview: false, note: "" };
+}
+
+function appendPending(base: string, pending: { note: string }): string {
+  if (!pending.note) return base;
+  if (!base) return pending.note;
+  return `${base} ${pending.note}`;
 }
 
 function iosVersion(input: {
@@ -273,8 +371,8 @@ function mapBuildOnly(buildVersion: string | null, buildState: BuildState, appVe
       platform: "ios",
       status: "pronta",
       version,
-      canReview: true,
-      detail: "Build pronto. Enviar cria a versão e submete.",
+      canPrepare: true,
+      detail: "Build pronto. Use Preparar versão.",
     });
   }
   return cell({

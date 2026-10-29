@@ -852,7 +852,7 @@ export class AzureStorage implements storage.Storage {
     let tableClient: TableClient;
     let blobServiceClient: BlobServiceClient;
 
-    if (process.env.EMULATED) {
+    if (process.env.EMULATED === "true") {
       const devConnectionString = "UseDevelopmentStorage=true";
 
       tableServiceClient = TableServiceClient.fromConnectionString(devConnectionString);

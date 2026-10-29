@@ -18,6 +18,7 @@ export function cell(input: {
   version?: string;
   detail?: string;
   label?: string;
+  canPrepare?: boolean;
   canReview?: boolean;
   canRelease?: boolean;
   canHalt?: boolean;
@@ -31,6 +32,7 @@ export function cell(input: {
     label: input.label ?? LABELS[input.status],
     detail: input.detail ?? "",
     version: input.version && input.version.length > 0 ? input.version : "—",
+    canPrepare: input.canPrepare ?? false,
     canReview: input.canReview ?? false,
     canRelease: input.canRelease ?? false,
     canHalt: input.canHalt ?? false,
@@ -86,7 +88,8 @@ export function noteFor(android: Cell, ios: Cell): string {
       parts.push(`${store}: ${item.lastError}`);
       continue;
     }
-    if (!item.detail || item.status === "liberada" || item.status === "indisponivel") continue;
+    if (!item.detail || item.status === "indisponivel") continue;
+    if (item.status === "liberada" && !item.canPrepare && !item.canReview) continue;
     parts.push(`${store}: ${item.detail}`);
   }
   return parts.join(" · ");

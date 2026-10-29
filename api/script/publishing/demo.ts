@@ -1,6 +1,14 @@
 import { cell, decorate, unavailable } from "./cells";
 import { formatPercent } from "./play-status";
-import type { ActionName, AppConfig, BoardApp, Cell, Platform } from "./types";
+import type {
+  ActionName,
+  AppConfig,
+  BoardApp,
+  Cell,
+  IosPrepareChoice,
+  IosPrepareOptions,
+  Platform,
+} from "./types";
 
 const VERSION = "4.2.0 (210)";
 
@@ -12,6 +20,9 @@ function initialCell(id: string, platform: Platform, configured: boolean): Cell 
   if (!configured) return unavailable(platform, platform === "android" ? "Este app não tem androidPackage." : "Este app não tem iosAppId.");
   const special = SPECIAL[id]?.[platform];
   if (special) return special();
+  if (platform === "ios") {
+    return base(platform, "pronta", { canPrepare: true, detail: "Build do CI disponível. Use Preparar versão." });
+  }
   return base(platform, "pronta", { canReview: true, detail: "Build do CI disponível." });
 }
 
@@ -71,7 +82,12 @@ const SPECIAL: Record<string, Partial<Record<Platform, () => Cell>>> = {
   },
   "nome-07": {
     android: () => base("android", "liberada", { label: "No ar" }),
-    ios: () => base("ios", "liberada", { label: "No ar" }),
+    ios: () =>
+      base("ios", "liberada", {
+        label: "No ar",
+        canPrepare: true,
+        detail: "Build 4.3.0 (220) disponível. Use Preparar versão.",
+      }),
   },
   "nome-08": {
     android: () => base("android", "sem_build", { version: "—", detail: "CI não gerou este aplicativo neste ciclo." }),
@@ -134,12 +150,59 @@ export function stampDemoError(app: BoardApp, platform: Platform, message: strin
   overrides.set(app.id, saved);
 }
 
-export function applyDemo(app: BoardApp, platform: Platform, action: ActionName, fraction = 0.01): string {
+export function demoPrepareOptions(app: AppConfig): IosPrepareOptions {
+  return {
+    appId: app.id,
+    appName: app.name,
+    liveVersion: "4.1.0",
+    draftVersion: null,
+    suggestedVersion: "4.2.0",
+    suggestedBuildId: "demo-build-210",
+    builds: [
+      {
+        id: "demo-build-210",
+        buildNumber: "210",
+        marketingVersion: "4.2.0",
+        processingState: "VALID",
+        label: "4.2.0 (210)",
+      },
+      {
+        id: "demo-build-209",
+        buildNumber: "209",
+        marketingVersion: "4.2.0",
+        processingState: "VALID",
+        label: "4.2.0 (209)",
+      },
+      {
+        id: "demo-build-198",
+        buildNumber: "198",
+        marketingVersion: "4.1.0",
+        processingState: "VALID",
+        label: "4.1.0 (198)",
+      },
+    ],
+  };
+}
+
+export function applyDemo(
+  app: BoardApp,
+  platform: Platform,
+  action: ActionName,
+  fraction = 0.01,
+  prepareChoice?: IosPrepareChoice,
+): string {
   const current = app[platform];
-  const next = nextCell(current, action, fraction);
+  if (action === "prepare" && platform !== "ios") {
+    throw new Error("Preparar versão só existe no iOS.");
+  }
+  const next = nextCell(current, action, fraction, prepareChoice);
   const saved = overrides.get(app.id) ?? {};
   saved[platform] = next;
   overrides.set(app.id, saved);
+  if (action === "prepare") {
+    const version = prepareChoice?.versionString?.trim() || (current.version === "—" ? "4.2.0" : current.version);
+    return `Rascunho ${version} criado com build ${prepareChoice?.buildId ?? "demo"}.`;
+  }
   if (action === "review") {
     return platform === "android"
       ? `Enviado para revisão em rollout de ${formatPercent(fraction)}.`
@@ -154,7 +217,26 @@ export function applyDemo(app: BoardApp, platform: Platform, action: ActionName,
   return fraction < 1 ? `Rollout atualizado para ${formatPercent(fraction)}.` : "Liberado para o usuário.";
 }
 
-function nextCell(current: Cell, action: ActionName, fraction: number): Cell {
+function nextCell(
+  current: Cell,
+  action: ActionName,
+  fraction: number,
+  prepareChoice?: IosPrepareChoice,
+): Cell {
+  if (action === "prepare") {
+    const version = prepareChoice?.versionString?.trim()
+      ? `${prepareChoice.versionString.trim()} (${prepareChoice.buildId.replace(/^demo-build-/, "") || "210"})`
+      : current.version === "—"
+        ? VERSION
+        : current.version;
+    return cell({
+      platform: "ios",
+      status: "pronta",
+      version,
+      canReview: true,
+      detail: "Versão pronta para enviar à revisão.",
+    });
+  }
   if (action === "review") {
     const android = current.platform === "android";
     const uncertain = fraction <= 0.02;

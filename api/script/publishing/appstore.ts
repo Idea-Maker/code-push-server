@@ -1,9 +1,18 @@
 import * as jwt from "jsonwebtoken";
 import { appStoreApiBase, appStoreAudience, defaultReleaseNotes, privateKeyFileName, readPrivateKey, releaseNotesFor } from "./config";
 import { describeError } from "./errors";
-import { compareVersions, mapIosStatus, marketingVersion, pickStoreVersion, type BuildState } from "./appstore-status";
+import {
+  compareVersions,
+  findPreparingDraft,
+  mapIosStatus,
+  marketingVersion,
+  pickStoreVersion,
+  type BuildState,
+  type IosVersionCandidate,
+} from "./appstore-status";
+import { formatAppBuild } from "./cells";
 import { serialize } from "./pool";
-import type { AppConfig, Cell } from "./types";
+import type { AppConfig, Cell, IosBuildOption, IosPrepareChoice, IosPrepareOptions } from "./types";
 
 const EDITABLE = new Set(["PREPARE_FOR_SUBMISSION", "REJECTED", "METADATA_REJECTED", "DEVELOPER_REJECTED"]);
 
@@ -123,9 +132,9 @@ async function listVersions(appId: string): Promise<VersionResource[]> {
     .sort((left, right) => (right.attributes.createdDate ?? "").localeCompare(left.attributes.createdDate ?? ""));
 }
 
-async function listBuilds(appId: string): Promise<BuildResource[]> {
+async function listBuilds(appId: string, limit = 5): Promise<BuildResource[]> {
   const body = await apple<{ data?: BuildResource[] }>(
-    `/v1/builds?filter[app]=${encodeURIComponent(appId)}&sort=-uploadedDate&limit=5&fields[builds]=version,processingState,uploadedDate`,
+    `/v1/builds?filter[app]=${encodeURIComponent(appId)}&sort=-uploadedDate&limit=${limit}&fields[builds]=version,processingState,uploadedDate`,
   );
   return body.data ?? [];
 }
@@ -223,15 +232,19 @@ export async function readIos(app: AppConfig): Promise<Cell> {
         onSale.map(async (item) => [item.id, await readPhased(item.id)] as const),
       ),
     );
-    const picked = pickStoreVersion(
-      versions.map((item) => ({
-        id: item.id,
-        versionString: item.attributes.versionString ?? null,
-        appStoreState: item.attributes.appStoreState ?? null,
-        releaseType: item.attributes.releaseType ?? null,
-        phasedReleaseState: phasedById.get(item.id)?.attributes.phasedReleaseState ?? null,
-      })),
-    );
+    const candidates: IosVersionCandidate[] = versions.map((item) => ({
+      id: item.id,
+      versionString: item.attributes.versionString ?? null,
+      appStoreState: item.attributes.appStoreState ?? null,
+      releaseType: item.attributes.releaseType ?? null,
+      phasedReleaseState: phasedById.get(item.id)?.attributes.phasedReleaseState ?? null,
+    }));
+    const live = candidates.find((item) => item.appStoreState === "READY_FOR_SALE");
+    const liveName = marketingVersion(live?.versionString);
+    const picked = pickStoreVersion(candidates);
+    const draft = findPreparingDraft(candidates, liveName);
+    const draftIsPrimary = Boolean(picked && draft && picked.id === draft.id);
+
     if (!picked) {
       const builds = await listBuilds(app.iosAppId as string);
       const build = builds[0];
@@ -243,6 +256,7 @@ export async function readIos(app: AppConfig): Promise<Cell> {
         releaseType: null,
         buildVersion: build?.attributes.version ?? null,
         buildState: toBuildState(build),
+        liveVersionString: liveName,
       });
     }
 
@@ -251,6 +265,20 @@ export async function readIos(app: AppConfig): Promise<Cell> {
     const storeBuild = await versionBuild(version.id);
     const fromStore = marketingVersion(version.attributes.versionString);
     const fromBuild = marketingVersion(await buildAppVersion(storeBuild ?? undefined));
+
+    let pendingDraftVersion: string | null = null;
+    let pendingDraftBuildState: BuildState | null = null;
+    let pendingBuildLabel: string | null = null;
+
+    if (draft && !draftIsPrimary) {
+      pendingDraftVersion = marketingVersion(draft.versionString);
+      const draftBuild = await versionBuild(draft.id);
+      pendingDraftBuildState = toBuildState(draftBuild ?? undefined);
+    } else if (!draft) {
+      const newer = await findNewerValidBuild(app.iosAppId as string, liveName);
+      if (newer) pendingBuildLabel = newer.label;
+    }
+
     return mapIosStatus({
       configured: true,
       versionString: fromStore,
@@ -261,32 +289,122 @@ export async function readIos(app: AppConfig): Promise<Cell> {
       buildState: toBuildState(storeBuild ?? undefined),
       phasedReleaseState: phased?.attributes.phasedReleaseState ?? null,
       currentDayNumber: phased?.attributes.currentDayNumber ?? null,
+      liveVersionString: liveName,
+      pendingDraftVersion,
+      pendingDraftBuildState,
+      pendingBuildLabel,
     });
   });
 }
 
-export async function reviewIos(app: AppConfig, notes?: string): Promise<string> {
+export async function listIosPrepareOptions(app: AppConfig): Promise<IosPrepareOptions> {
   const appId = app.iosAppId;
   if (!appId) throw new Error("App sem iosAppId.");
   return serialize(`ios:${appId}`, async () => {
     const versions = await listVersions(appId);
-    const builds = await listBuilds(appId);
-    const build = builds.find((item) => item.attributes.processingState === "VALID");
-    if (!build) throw new Error("Não há build processado. Espere o upload do CI terminar.");
-
-    let version = versions.find(
-      (item) => EDITABLE.has(item.attributes.appStoreState ?? "") && marketingVersion(item.attributes.versionString),
+    const live = versions.find((item) => item.attributes.appStoreState === "READY_FOR_SALE");
+    const liveName = marketingVersion(live?.attributes.versionString);
+    const draft = findPreparingDraft(
+      versions.map((item) => ({
+        id: item.id,
+        versionString: item.attributes.versionString ?? null,
+        appStoreState: item.attributes.appStoreState ?? null,
+      })),
+      liveName,
     );
-    if (!version) {
+    const draftVersion = marketingVersion(draft?.versionString);
+    const builds = await listBuilds(appId, 20);
+    const options: IosBuildOption[] = [];
+    for (const build of builds) {
       const marketing = marketingVersion(await buildAppVersion(build));
-      if (!marketing) throw new Error("O build não informa a versão do app.");
-      const live = versions.find((item) => item.attributes.appStoreState === "READY_FOR_SALE");
-      if (live?.attributes.versionString && compareVersions(marketing, live.attributes.versionString) <= 0) {
+      const buildNumber = build.attributes.version?.trim() || "";
+      options.push({
+        id: build.id,
+        buildNumber,
+        marketingVersion: marketing,
+        processingState: build.attributes.processingState ?? "PROCESSING",
+        label: formatAppBuild(marketing, buildNumber),
+      });
+    }
+    const valid = options.filter((item) => item.processingState === "VALID");
+    const preferred =
+      valid.find((item) => draftVersion && item.marketingVersion === draftVersion) ??
+      valid.find((item) => item.marketingVersion && liveName && compareVersions(item.marketingVersion, liveName) > 0) ??
+      valid[0] ??
+      null;
+    return {
+      appId: app.id,
+      appName: app.name,
+      liveVersion: liveName,
+      draftVersion,
+      suggestedVersion: draftVersion ?? preferred?.marketingVersion ?? null,
+      suggestedBuildId: preferred?.id ?? null,
+      builds: options,
+    };
+  });
+}
+
+export async function prepareIos(app: AppConfig, choice?: Omit<IosPrepareChoice, "appId">): Promise<string> {
+  const appId = app.iosAppId;
+  if (!appId) throw new Error("App sem iosAppId.");
+  return serialize(`ios:${appId}`, async () => {
+    const versions = await listVersions(appId);
+    const builds = await listBuilds(appId, 20);
+    const live = versions.find((item) => item.attributes.appStoreState === "READY_FOR_SALE");
+    const liveName = marketingVersion(live?.attributes.versionString);
+
+    let build: BuildResource | undefined;
+    let marketing: string | null = null;
+
+    if (choice?.buildId) {
+      build = builds.find((item) => item.id === choice.buildId);
+      if (!build) {
+        const listed = await listBuilds(appId, 50);
+        build = listed.find((item) => item.id === choice.buildId);
+      }
+      if (!build) throw new Error("Build escolhido não foi encontrado no App Store Connect.");
+      if (build.attributes.processingState !== "VALID") {
+        throw new Error("O build escolhido ainda não está válido. Espere o processamento na Apple.");
+      }
+      marketing = marketingVersion(await buildAppVersion(build));
+    } else {
+      const auto = await resolveValidBuild(builds, null, liveName);
+      if (!auto) throw new Error("Não há build processado. Espere o upload do CI terminar.");
+      build = auto.build;
+      marketing = auto.marketing;
+    }
+
+    const requested = choice?.versionString?.trim() ? marketingVersion(choice.versionString) : null;
+    if (choice?.versionString?.trim() && !requested) {
+      throw new Error("A versão do rascunho precisa ser no formato 1.2 ou 1.2.3.");
+    }
+    const versionString = requested ?? marketing;
+    if (!versionString) throw new Error("O build não informa a versão do app.");
+    if (marketing && marketing !== versionString) {
+      throw new Error(
+        `O build é da versão ${marketing}, mas o rascunho pedido é ${versionString}. Escolha um build da mesma versão.`,
+      );
+    }
+    if (liveName && compareVersions(versionString, liveName) <= 0) {
+      throw new Error(`A versão ${liveName} já está no ar. Informe uma versão maior.`);
+    }
+
+    let version = versions.find((item) => {
+      if (!EDITABLE.has(item.attributes.appStoreState ?? "")) return false;
+      const name = marketingVersion(item.attributes.versionString);
+      return Boolean(name && name === versionString);
+    });
+    if (!version) {
+      const other = versions.find(
+        (item) => EDITABLE.has(item.attributes.appStoreState ?? "") && marketingVersion(item.attributes.versionString),
+      );
+      const existingName = other ? marketingVersion(other.attributes.versionString) : null;
+      if (other && existingName && existingName !== versionString) {
         throw new Error(
-          `A versão ${live.attributes.versionString} já está no ar. O CI precisa gerar uma versão maior.`,
+          `Já existe o rascunho ${existingName}. Remova ou use esse rascunho antes de preparar ${versionString}.`,
         );
       }
-      version = await createVersion(appId, marketing);
+      version = await createVersion(appId, versionString);
     }
 
     await apple(`/v1/appStoreVersions/${version.id}`, {
@@ -300,6 +418,53 @@ export async function reviewIos(app: AppConfig, notes?: string): Promise<string>
       },
     });
     await attachBuild(version.id, build.id);
+    await ensureWhatsNew(version.id, releaseNotesFor(app), false);
+    await ensurePhased(version.id);
+
+    const versionName = version.attributes.versionString ?? versionString;
+    const buildLabel = formatAppBuild(marketing ?? versionString, build.attributes.version ?? null);
+    return `Rascunho ${versionName} criado com build ${buildLabel}.`;
+  });
+}
+
+export async function reviewIos(app: AppConfig, notes?: string): Promise<string> {
+  const appId = app.iosAppId;
+  if (!appId) throw new Error("App sem iosAppId.");
+  return serialize(`ios:${appId}`, async () => {
+    const versions = await listVersions(appId);
+    const version = versions.find(
+      (item) => EDITABLE.has(item.attributes.appStoreState ?? "") && marketingVersion(item.attributes.versionString),
+    );
+    if (!version) throw new Error("Prepare a versão antes de enviar.");
+
+    const versionName = marketingVersion(version.attributes.versionString);
+    if (!versionName) throw new Error("Prepare a versão antes de enviar.");
+
+    let storeBuild = await versionBuild(version.id);
+    if (!storeBuild || storeBuild.attributes.processingState !== "VALID") {
+      const builds = await listBuilds(appId);
+      const matched = await resolveValidBuild(builds, versionName, null);
+      if (!matched) {
+        throw new Error(
+          storeBuild
+            ? "O build do rascunho ainda não está válido. Espere o processamento ou use Preparar versão."
+            : "O rascunho não tem build. Use Preparar versão antes de enviar.",
+        );
+      }
+      await attachBuild(version.id, matched.build.id);
+      storeBuild = matched.build;
+    }
+
+    await apple(`/v1/appStoreVersions/${version.id}`, {
+      method: "PATCH",
+      body: {
+        data: {
+          type: "appStoreVersions",
+          id: version.id,
+          attributes: { releaseType: "MANUAL" },
+        },
+      },
+    });
     const typed = notes?.trim();
     await ensureWhatsNew(version.id, releaseNotesFor(app, notes), Boolean(typed && typed !== defaultReleaseNotes()));
     await ensurePhased(version.id);
@@ -315,9 +480,34 @@ export async function reviewIos(app: AppConfig, notes?: string): Promise<string>
       },
     });
 
-    const versionName = version.attributes.versionString ?? build.attributes.version ?? "";
     return `Versão ${versionName} enviada para revisão. A liberação será faseada em 7 dias.`;
   });
+}
+
+async function resolveValidBuild(
+  builds: readonly BuildResource[],
+  requiredMarketing: string | null,
+  liveName: string | null,
+): Promise<{ build: BuildResource; marketing: string } | null> {
+  for (const build of builds) {
+    if (build.attributes.processingState !== "VALID") continue;
+    const marketing = marketingVersion(await buildAppVersion(build));
+    if (!marketing) continue;
+    if (requiredMarketing && marketing !== requiredMarketing) continue;
+    if (!requiredMarketing && liveName && compareVersions(marketing, liveName) <= 0) continue;
+    return { build, marketing };
+  }
+  return null;
+}
+
+async function findNewerValidBuild(
+  appId: string,
+  liveName: string | null,
+): Promise<{ label: string } | null> {
+  const builds = await listBuilds(appId);
+  const matched = await resolveValidBuild(builds, null, liveName);
+  if (!matched) return null;
+  return { label: formatAppBuild(matched.marketing, matched.build.attributes.version ?? null) };
 }
 
 export async function releaseIos(app: AppConfig): Promise<string> {
