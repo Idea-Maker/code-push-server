@@ -11,10 +11,37 @@ export type RawRelease = {
   inAppUpdatePriority?: number;
 };
 
+/** Prefere um name com versionName (ex.: "6.5.2" ou "123 (6.5.2)") em vez do versionCode puro. */
+export function pickRicherAndroidReleaseName(
+  versionCode: number,
+  ...candidates: Array<string | null | undefined>
+): string | undefined {
+  const build = String(versionCode);
+  const names = candidates
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  if (names.length === 0) return undefined;
+  const withMarketing = names.find((name) => name !== build && /\d+\.\d+/.test(name));
+  if (withMarketing) return withMarketing;
+  return names.find((name) => name !== build) ?? names[0];
+}
+
+export function findAndroidReleaseName(
+  releases: readonly RawRelease[],
+  versionCode: number,
+): string | undefined {
+  const matches = releases.filter((release) =>
+    (release.versionCodes ?? []).some((code) => Number(code) === versionCode),
+  );
+  return pickRicherAndroidReleaseName(versionCode, ...matches.map((release) => release.name));
+}
+
 export function mapAndroidStatus(input: {
   configured: boolean;
   latestVersionCode: number | null;
   releases: RawRelease[];
+  /** Nome de release encontrado em qualquer faixa (ex.: internal) para o versionCode. */
+  releaseName?: string | null;
 }): Cell {
   if (!input.configured) {
     return unavailable("android", "Este app não tem androidPackage.");
@@ -31,17 +58,18 @@ export function mapAndroidStatus(input: {
   const match = input.releases.find((release) =>
     (release.versionCodes ?? []).some((code) => Number(code) === latest),
   );
+  const releaseName = pickRicherAndroidReleaseName(latest, match?.name, input.releaseName);
   if (!match) {
     return cell({
       platform: "android",
       status: "pronta",
-      version: String(latest),
+      version: formatAndroidReleaseName(releaseName, latest),
       canReview: true,
       detail: "Bundle enviado pelo CI, ainda fora da faixa.",
     });
   }
 
-  const version = formatAndroidReleaseName(match.name, latest);
+  const version = formatAndroidReleaseName(releaseName, latest);
   if (match.status === "draft") {
     return cell({
       platform: "android",
@@ -98,8 +126,10 @@ export function withReviewRelease(
   fraction: number,
   language: string,
   replaceNotes = false,
+  releaseName?: string | null,
 ): RawRelease[] {
   const code = String(latest);
+  const name = pickRicherAndroidReleaseName(latest, releaseName) ?? code;
   const note = [{ language, text: notes }];
   const rollout = fraction >= 1 ? { status: "completed" as const } : { status: "inProgress" as const, userFraction: fraction };
   const index = releases.findIndex((release) => (release.versionCodes ?? []).map(String).includes(code));
@@ -114,9 +144,11 @@ export function withReviewRelease(
     const next = releases.slice();
     const { userFraction, ...rest } = current;
     void userFraction;
+    const richerName = pickRicherAndroidReleaseName(latest, current.name, releaseName);
     next[index] = {
       ...rest,
       ...rollout,
+      ...(richerName ? { name: richerName } : {}),
       releaseNotes: !replaceNotes && current.releaseNotes?.length ? current.releaseNotes : note,
     };
     return next;
@@ -129,7 +161,7 @@ export function withReviewRelease(
 
   return [
     {
-      name: code,
+      name,
       versionCodes: [code],
       ...rollout,
       releaseNotes: note,

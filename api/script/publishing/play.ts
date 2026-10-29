@@ -2,9 +2,11 @@ import { GoogleAuth, type AuthClient } from "google-auth-library";
 import { androidTrack, defaultReleaseNotes, notesLanguage, playApiRoot, playAuthScope, playCredentials, releaseNotesFor, reviewFraction } from "./config";
 import { describeError } from "./errors";
 import {
+  findAndroidReleaseName,
   formatPercent,
   latestVersionCode,
   mapAndroidStatus,
+  pickRicherAndroidReleaseName,
   withHaltedRelease,
   withReviewRelease,
   withTargetFraction,
@@ -16,6 +18,15 @@ import type { AppConfig, Cell } from "./types";
 type EditResponse = { id?: string };
 type BundlesResponse = { bundles?: { versionCode?: number }[] };
 type TrackResponse = { track?: string; releases?: RawRelease[] };
+type TracksListResponse = { tracks?: TrackResponse[] };
+
+type OpenedTrack = {
+  editId: string;
+  releases: RawRelease[];
+  latest: number | null;
+  /** Nome com versionName, se existir em qualquer faixa (internal/alpha/…). */
+  releaseName: string | null;
+};
 
 let auth: GoogleAuth | null = null;
 
@@ -59,7 +70,7 @@ async function abandon(packageName: string, editId: string): Promise<void> {
   await play(endpoint(packageName, `/edits/${editId}`), { method: "DELETE" }).catch(() => undefined);
 }
 
-async function openTrack(app: AppConfig): Promise<{ editId: string; releases: RawRelease[]; latest: number | null }> {
+async function openTrack(app: AppConfig): Promise<OpenedTrack> {
   const packageName = app.androidPackage;
   if (!packageName) throw new Error("App sem androidPackage.");
   const track = androidTrack(app);
@@ -67,15 +78,23 @@ async function openTrack(app: AppConfig): Promise<{ editId: string; releases: Ra
   const editId = edit.id;
   if (!editId) throw new Error("O Play não retornou o edit.");
   try {
-    const [bundles, trackBody] = await Promise.all([
+    const [bundles, trackBody, allTracks] = await Promise.all([
       play<BundlesResponse>(endpoint(packageName, `/edits/${editId}/bundles`)),
       play<TrackResponse>(endpoint(packageName, `/edits/${editId}/tracks/${encodeURIComponent(track)}`)),
+      play<TracksListResponse>(endpoint(packageName, `/edits/${editId}/tracks`)),
     ]);
-    return {
-      editId,
-      releases: trackBody.releases ?? [],
-      latest: latestVersionCode((bundles.bundles ?? []).map((bundle) => bundle.versionCode)),
-    };
+    const releases = trackBody.releases ?? [];
+    const latest = latestVersionCode((bundles.bundles ?? []).map((bundle) => bundle.versionCode));
+    const otherReleases = (allTracks.tracks ?? []).flatMap((item) => item.releases ?? []);
+    const releaseName =
+      latest === null
+        ? null
+        : pickRicherAndroidReleaseName(
+            latest,
+            findAndroidReleaseName(releases, latest),
+            findAndroidReleaseName(otherReleases, latest),
+          ) ?? null;
+    return { editId, releases, latest, releaseName };
   } catch (error) {
     await abandon(packageName, editId);
     throw error;
@@ -110,6 +129,7 @@ export async function readAndroid(app: AppConfig): Promise<Cell> {
       configured: true,
       latestVersionCode: opened.latest,
       releases: opened.releases,
+      releaseName: opened.releaseName,
     });
   });
 }
@@ -130,6 +150,7 @@ export async function reviewAndroid(app: AppConfig, fraction = reviewFraction(),
           fraction,
           notesLanguage(),
           replaceNotes,
+          opened.releaseName,
         ),
         message: `Version code ${opened.latest} enviado para revisão em rollout de ${formatPercent(fraction)}.`,
       };
@@ -160,7 +181,7 @@ export async function haltAndroid(app: AppConfig): Promise<string> {
 async function changeAndroid(
   app: AppConfig,
   // eslint-disable-next-line no-unused-vars
-  change: (opened: { releases: RawRelease[]; latest: number | null }) => { releases: RawRelease[]; message: string },
+  change: (opened: OpenedTrack) => { releases: RawRelease[]; message: string },
 ): Promise<string> {
   const packageName = app.androidPackage as string;
   const opened = await openTrack(app);
