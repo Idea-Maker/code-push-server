@@ -5,6 +5,7 @@
       "name": "H App do Bem",
       "project": "WL",
       "androidPackage": "br.com.ideamaker.apcapdobem",
+      "playConsoleAppId": "4974215253432727196",
       "iosAppId": "1387709116"
     },
     {
@@ -12,6 +13,7 @@
       "name": "Centro Oeste Cap",
       "project": "WL",
       "androidPackage": "com.ideamaker.centrooeste",
+      "playConsoleAppId": "4973809612702690116",
       "iosAppId": "1489717528"
     },
     {
@@ -19,6 +21,7 @@
       "name": "HiperXCAP",
       "project": "WL",
       "androidPackage": "br.com.ideamaker.hipercapbrasil",
+      "playConsoleAppId": "4976161480827478714",
       "iosAppId": "6471998979"
     },
     {
@@ -26,6 +29,7 @@
       "name": "Vale Cap Litoral",
       "project": "WL",
       "androidPackage": "br.com.ideamaker.caplegallitoral",
+      "playConsoleAppId": "4972595594671508262",
       "iosAppId": "1396305698"
     },
     {
@@ -33,6 +37,7 @@
       "name": "Hiper Saúde Bauru",
       "project": "WL",
       "androidPackage": "com.ideamaker.hsaudebauru",
+      "playConsoleAppId": "4974461163517792041",
       "iosAppId": "1462755970"
     },
     {
@@ -40,13 +45,39 @@
       "name": "Hiper Saúde Ribeirão",
       "project": "WL",
       "androidPackage": "com.ideamaker.hsauderibeirao",
+      "playConsoleAppId": "4973234834061931758",
       "iosAppId": "1489717725"
+    },
+    {
+      "id": "hipercapmogi",
+      "name": "HiperXCAP Mogi",
+      "project": "WL",
+      "androidPackage": "br.com.ideamaker.hipercapmogi",
+      "playConsoleAppId": "4975704319847080579",
+      "iosAppId": "1434134449"
+    },
+    {
+      "id": "hipercapabc",
+      "name": "HiperXCAP ABC",
+      "project": "WL",
+      "androidPackage": "br.com.ideamaker.hipercapabc",
+      "playConsoleAppId": "4975704319847080579",
+      "iosAppId": "1459386614"
+    },
+    {
+      "id": "hipersortecg",
+      "name": "HiperXCAP Campos Gerais",
+      "project": "WL",
+      "androidPackage": "com.ideamaker.hipersortecg",
+      "playConsoleAppId": "4975457987063969344",
+      "iosAppId": "1558553538"
     },
     {
       "id": "mscap",
       "name": "MS Cap",
       "project": "WL",
       "androidPackage": "com.ideamaker.mscap",
+      "playConsoleAppId": "4975563815068157563",
       "iosAppId": "1548493242"
     },
     {
@@ -54,6 +85,7 @@
       "name": "Saúde Cap",
       "project": "WL",
       "androidPackage": "com.ideamaker.riopreto",
+      "playConsoleAppId": "4975864354474663564",
       "iosAppId": "1489717728"
     },
     {
@@ -61,6 +93,7 @@
       "name": "SP Cap",
       "project": "WL",
       "androidPackage": "com.ideamaker.spcap",
+      "playConsoleAppId": "4973155743638780540",
       "iosAppId": "1462757730"
     },
     {
@@ -68,6 +101,7 @@
       "name": "Vale Cap",
       "project": "WL",
       "androidPackage": "com.ideamaker.valecap",
+      "playConsoleAppId": "4974092675230855270",
       "iosAppId": "1454280541"
     },
     {
@@ -75,13 +109,23 @@
       "name": "Vida Cap",
       "project": "WL",
       "androidPackage": "com.ideamaker.vidacap",
+      "playConsoleAppId": "4974612919934689093",
       "iosAppId": "1461494154"
+    },
+    {
+      "id": "mineirinhadasorte",
+      "name": "Mineirinha da Sorte",
+      "project": "WL",
+      "androidPackage": "com.ideamaker.mineirinhads",
+      "playConsoleAppId": "4976023172609433406",
+      "iosAppId": "1538054950"
     },
     {
       "id": "apcapsp",
       "name": "Apcap da Sorte",
       "project": "ADS",
       "androidPackage": "br.com.apcapsp.app",
+      "playConsoleAppId": "4972977516089597076",
       "iosAppId": "1444105915"
     }
   ]

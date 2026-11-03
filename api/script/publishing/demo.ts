@@ -37,22 +37,21 @@ const SPECIAL: Record<string, Partial<Record<Platform, () => Cell>>> = {
   },
   "nome-03": {
     android: () =>
-      base("android", "aprovada", {
-        label: "Rollout 1% · pode estar em revisão",
-        canRelease: true,
-        canHalt: true,
+      base("android", "em_revisao", {
+        label: "Em revisão",
         releaseUncertain: true,
-        detail: "Liberar sobe para 100%. Se a Google ainda estiver revisando, este aplicativo falha e os outros seguem.",
+        detail: "Em revisão do Google. Ainda não está disponível para os usuários.",
       }),
     ios: () => base("ios", "em_revisao", { detail: "Na fila da Apple." }),
   },
   "nome-04": {
     android: () =>
       base("android", "aprovada", {
-        label: "Rollout 20%",
-        canRelease: true,
-        canHalt: true,
-        detail: "Liberar sobe o rollout para 100%.",
+        label: "Pronto para publicar",
+        needsConsolePublish: true,
+        consoleUrl: "https://play.google.com/console/u/0/developers/demo/app/demo/publishing",
+        detail:
+          "Aprovado (10%). Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.",
       }),
     ios: () =>
       base("ios", "aprovada", {
@@ -67,7 +66,8 @@ const SPECIAL: Record<string, Partial<Record<Platform, () => Cell>>> = {
         label: "Rollout 20%",
         canRelease: true,
         canHalt: true,
-        detail: "Liberar sobe o rollout para 100%.",
+        inRollout: true,
+        detail: "Já está em rollout. Use Aumentar rollout para subir a %.",
       }),
     ios: () => base("ios", "em_revisao", { detail: "Na fila da Apple." }),
   },
@@ -81,10 +81,10 @@ const SPECIAL: Record<string, Partial<Record<Platform, () => Cell>>> = {
       }),
   },
   "nome-07": {
-    android: () => base("android", "liberada", { label: "No ar" }),
+    android: () => base("android", "liberada", { label: "No ar 100%" }),
     ios: () =>
       base("ios", "liberada", {
-        label: "No ar",
+        label: "No ar 100%",
         canPrepare: true,
         detail: "Build 4.3.0 (220) disponível. Use Preparar versão.",
       }),
@@ -113,12 +113,17 @@ const SPECIAL: Record<string, Partial<Record<Platform, () => Cell>>> = {
         label: "Rollout 20%",
         canRelease: true,
         canHalt: true,
-        detail: "Liberar sobe o rollout para 100%.",
+        inRollout: true,
+        detail: "Já está em rollout. Use Aumentar rollout para subir a %.",
       }),
     ios: () => base("ios", "sem_build", { version: "—", detail: "Build ainda processando na Apple." }),
   },
   "nome-12": {
-    android: () => base("android", "em_revisao", { detail: "Na fila da Google, fora do rollout." }),
+    android: () =>
+      base("android", "em_revisao", {
+        label: "Em revisão",
+        detail: "Na fila da Google, fora do rollout.",
+      }),
     ios: () =>
       base("ios", "aprovada", {
         label: "Aprovada",
@@ -165,6 +170,8 @@ export function demoPrepareOptions(app: AppConfig): IosPrepareOptions {
         marketingVersion: "4.2.0",
         processingState: "VALID",
         label: "4.2.0 (210)",
+        usesNonExemptEncryption: false,
+        complianceReady: true,
       },
       {
         id: "demo-build-209",
@@ -172,13 +179,17 @@ export function demoPrepareOptions(app: AppConfig): IosPrepareOptions {
         marketingVersion: "4.2.0",
         processingState: "VALID",
         label: "4.2.0 (209)",
+        usesNonExemptEncryption: false,
+        complianceReady: true,
       },
       {
         id: "demo-build-198",
         buildNumber: "198",
         marketingVersion: "4.1.0",
         processingState: "VALID",
-        label: "4.1.0 (198)",
+        label: "4.1.0 (198) · Missing Compliance",
+        usesNonExemptEncryption: null,
+        complianceReady: false,
       },
     ],
   };
@@ -214,7 +225,12 @@ export function applyDemo(
     if (current.inRollout) return "Liberada para 100% dos usuários.";
     return "Liberado em lançamento faseado de 7 dias.";
   }
-  return fraction < 1 ? `Rollout atualizado para ${formatPercent(fraction)}.` : "Liberado para o usuário.";
+  if (!current.inRollout) {
+    throw new Error(
+      "A primeira publicação com Publicação Gerenciada é só na Play Console. Use o link do board e depois Aumentar rollout.",
+    );
+  }
+  return fraction < 1 ? `Rollout atualizado para ${formatPercent(fraction)}.` : "Rollout promovido para 100%.";
 }
 
 function nextCell(
@@ -239,21 +255,37 @@ function nextCell(
   }
   if (action === "review") {
     const android = current.platform === "android";
-    const uncertain = fraction <= 0.02;
+    const underReview = android && fraction <= 0.02;
+    if (android && underReview) {
+      return cell({
+        platform: "android",
+        status: "em_revisao",
+        version: current.version,
+        label: "Em revisão",
+        canRelease: true,
+        canHalt: true,
+        releaseUncertain: true,
+        detail:
+          "Enviado para a Google. Ainda não é rollout real — se a análise estiver em andamento, Liberar pode falhar neste app e os outros seguem.",
+      });
+    }
+    if (android) {
+      return cell({
+        platform: "android",
+        status: "aprovada",
+        version: current.version,
+        label: "Pronto para publicar",
+        needsConsolePublish: true,
+        consoleUrl: "https://play.google.com/console/u/0/developers/demo/app/demo/publishing",
+        detail: `Aprovado (${formatPercent(fraction)}). Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.`,
+      });
+    }
     return cell({
-      platform: current.platform,
-      status: android ? "aprovada" : "em_revisao",
+      platform: "ios",
+      status: "em_revisao",
       version: current.version,
-      label: android
-        ? `Rollout ${formatPercent(fraction)}${uncertain ? " · pode estar em revisão" : ""}`
-        : "Em revisão",
-      canRelease: android,
-      canHalt: android,
-      inRollout: android,
-      releaseUncertain: android && uncertain,
-      detail: android
-        ? "Enviado agora. Liberar escolhe a próxima porcentagem."
-        : "Na fila da Apple.",
+      label: "Em revisão",
+      detail: "Na fila da Apple.",
     });
   }
   if (action === "halt") {
@@ -271,7 +303,7 @@ function nextCell(
         platform: "ios",
         status: "liberada",
         version: current.version,
-        label: "No ar",
+        label: "No ar 100%",
         detail: "Faseado encerrado. Disponível para 100% dos usuários.",
       });
     }
@@ -286,22 +318,29 @@ function nextCell(
       detail: "Disponível para 1% dos usuários. Liberar encerra o faseado e vai para 100%.",
     });
   }
-  if (current.platform === "android" && fraction < 1) {
-    return cell({
-      platform: "android",
-      status: "aprovada",
-      version: current.version,
-      label: `Rollout ${formatPercent(fraction)}`,
-      canRelease: true,
-      canHalt: true,
-      inRollout: true,
-      detail: "Já está em rollout. Liberar aumenta a porcentagem.",
-    });
+  if (current.platform === "android") {
+    if (!current.inRollout) {
+      throw new Error(
+        "A primeira publicação com Publicação Gerenciada é só na Play Console. Use o link do board e depois Aumentar rollout.",
+      );
+    }
+    if (fraction < 1) {
+      return cell({
+        platform: "android",
+        status: "aprovada",
+        version: current.version,
+        label: `Rollout ${formatPercent(fraction)}`,
+        canRelease: true,
+        canHalt: true,
+        inRollout: true,
+        detail: "Já está em rollout. Use Aumentar rollout para subir a %.",
+      });
+    }
   }
   return cell({
     platform: current.platform,
     status: "liberada",
     version: current.version,
-    label: "No ar",
+    label: "No ar 100%",
   });
 }

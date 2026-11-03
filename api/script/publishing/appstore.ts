@@ -12,7 +12,14 @@ import {
 } from "./appstore-status";
 import { formatAppBuild } from "./cells";
 import { serialize } from "./pool";
-import type { AppConfig, Cell, IosBuildOption, IosPrepareChoice, IosPrepareOptions } from "./types";
+import type {
+  AppConfig,
+  Cell,
+  IosBuildOption,
+  IosPrepareChoice,
+  IosPrepareOptions,
+  IosReleaseType,
+} from "./types";
 
 const EDITABLE = new Set(["PREPARE_FOR_SUBMISSION", "REJECTED", "METADATA_REJECTED", "DEVELOPER_REJECTED"]);
 
@@ -22,6 +29,7 @@ type VersionResource = {
     versionString?: string;
     appStoreState?: string;
     releaseType?: string;
+    earliestReleaseDate?: string | null;
     createdDate?: string;
   };
 };
@@ -31,6 +39,7 @@ type BuildResource = {
   attributes: {
     version?: string;
     processingState?: string;
+    usesNonExemptEncryption?: boolean | null;
   };
 };
 
@@ -108,19 +117,51 @@ async function apple<T>(pathname: string, init?: { method?: string; body?: unkno
 
   if (response.status === 204) return undefined as T;
   const text = await response.text();
-  let data: (T & { errors?: { detail?: string; title?: string }[] }) | undefined;
+  let data: (T & { errors?: AppleErrorItem[] }) | undefined;
   if (text) {
     try {
-      data = JSON.parse(text) as T & { errors?: { detail?: string; title?: string }[] };
+      data = JSON.parse(text) as T & { errors?: AppleErrorItem[] };
     } catch {
       data = undefined;
     }
   }
   if (!response.ok) {
-    const detail = data?.errors?.map((item) => item.detail || item.title).filter(Boolean).join("; ");
-    throw new AppleHttpError(detail || `App Store Connect respondeu ${response.status}`, response.status);
+    throw new AppleHttpError(formatAppleErrors(data?.errors) || `App Store Connect respondeu ${response.status}`, response.status);
   }
   return data as T;
+}
+
+type AppleErrorItem = {
+  detail?: string;
+  title?: string;
+  code?: string;
+  meta?: {
+    associatedErrors?: Record<string, { detail?: string; title?: string; code?: string }[]>;
+  };
+};
+
+function formatAppleErrors(errors: AppleErrorItem[] | undefined): string {
+  if (!errors?.length) return "";
+  const parts: string[] = [];
+  for (const item of errors) {
+    const main = item.detail || item.title;
+    if (main) parts.push(main);
+    const associated = item.meta?.associatedErrors;
+    if (!associated) continue;
+    for (const [path, nested] of Object.entries(associated)) {
+      for (const error of nested) {
+        const detail = error.detail || error.title || error.code;
+        if (detail) parts.push(`${shortApplePath(path)}: ${detail}`);
+      }
+    }
+  }
+  return parts.join(" · ");
+}
+
+function shortApplePath(path: string): string {
+  const cleaned = path.replace(/^\/v1\//, "").replace(/\/$/, "");
+  const [resource] = cleaned.split("/");
+  return resource || cleaned;
 }
 
 async function listVersions(appId: string): Promise<VersionResource[]> {
@@ -134,7 +175,7 @@ async function listVersions(appId: string): Promise<VersionResource[]> {
 
 async function listBuilds(appId: string, limit = 5): Promise<BuildResource[]> {
   const body = await apple<{ data?: BuildResource[] }>(
-    `/v1/builds?filter[app]=${encodeURIComponent(appId)}&sort=-uploadedDate&limit=${limit}&fields[builds]=version,processingState,uploadedDate`,
+    `/v1/builds?filter[app]=${encodeURIComponent(appId)}&sort=-uploadedDate&limit=${limit}&fields[builds]=version,processingState,uploadedDate,usesNonExemptEncryption`,
   );
   return body.data ?? [];
 }
@@ -142,11 +183,40 @@ async function listBuilds(appId: string, limit = 5): Promise<BuildResource[]> {
 async function versionBuild(versionId: string): Promise<BuildResource | null> {
   try {
     const body = await apple<{ data?: BuildResource | null }>(
-      `/v1/appStoreVersions/${versionId}/build?fields[builds]=version,processingState,uploadedDate`,
+      `/v1/appStoreVersions/${versionId}/build?fields[builds]=version,processingState,uploadedDate,usesNonExemptEncryption`,
     );
     return body.data?.id ? body.data : null;
   } catch (error) {
     if (error instanceof AppleHttpError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+function complianceReady(build: BuildResource): boolean {
+  return build.attributes.usesNonExemptEncryption !== null && build.attributes.usesNonExemptEncryption !== undefined;
+}
+
+/** Equivalente a "None of the algorithms mentioned above" na Console. */
+async function ensureExportComplianceExempt(build: BuildResource): Promise<void> {
+  if (complianceReady(build)) return;
+  try {
+    await apple(`/v1/builds/${build.id}`, {
+      method: "PATCH",
+      body: {
+        data: {
+          type: "builds",
+          id: build.id,
+          attributes: { usesNonExemptEncryption: false },
+        },
+      },
+    });
+    build.attributes.usesNonExemptEncryption = false;
+  } catch (error) {
+    // Já definido na Apple → 409; segue.
+    if (error instanceof AppleHttpError && error.status === 409) {
+      build.attributes.usesNonExemptEncryption = false;
+      return;
+    }
     throw error;
   }
 }
@@ -170,18 +240,54 @@ function toBuildState(build: BuildResource | undefined): BuildState {
   return "processing";
 }
 
-async function createVersion(appId: string, versionString: string): Promise<VersionResource> {
+async function createVersion(
+  appId: string,
+  versionString: string,
+  releaseType: IosReleaseType = "MANUAL",
+  earliestReleaseDate?: string,
+): Promise<VersionResource> {
+  const attributes: Record<string, string> = {
+    platform: "IOS",
+    versionString,
+    releaseType,
+  };
+  if (releaseType === "SCHEDULED" && earliestReleaseDate) {
+    attributes.earliestReleaseDate = earliestReleaseDate;
+  }
   const body = await apple<{ data: VersionResource }>("/v1/appStoreVersions", {
     method: "POST",
     body: {
       data: {
         type: "appStoreVersions",
-        attributes: { platform: "IOS", versionString, releaseType: "MANUAL" },
+        attributes,
         relationships: { app: { data: { type: "apps", id: appId } } },
       },
     },
   });
   return body.data;
+}
+
+async function applyReleaseSettings(
+  versionId: string,
+  releaseType: IosReleaseType,
+  earliestReleaseDate?: string,
+): Promise<void> {
+  const attributes: Record<string, string | null> = { releaseType };
+  if (releaseType === "SCHEDULED") {
+    attributes.earliestReleaseDate = earliestReleaseDate ?? null;
+  } else {
+    attributes.earliestReleaseDate = null;
+  }
+  await apple(`/v1/appStoreVersions/${versionId}`, {
+    method: "PATCH",
+    body: {
+      data: {
+        type: "appStoreVersions",
+        id: versionId,
+        attributes,
+      },
+    },
+  });
 }
 
 async function attachBuild(versionId: string, buildId: string): Promise<void> {
@@ -199,27 +305,31 @@ async function attachBuild(versionId: string, buildId: string): Promise<void> {
 
 async function ensureWhatsNew(versionId: string, notes: string, replace: boolean): Promise<void> {
   const body = await apple<{ data?: Localization[] }>(
-    `/v1/appStoreVersions/${versionId}/appStoreVersionLocalizations?limit=20`,
+    `/v1/appStoreVersions/${versionId}/appStoreVersionLocalizations?limit=50`,
   );
   const locales = body.data ?? [];
-  const preferred =
-    locales.find((item) => item.attributes.locale === "pt-BR") ??
-    locales.find((item) => item.attributes.locale === "pt-PT") ??
-    locales[0];
-  if (!preferred) {
+  if (locales.length === 0) {
     throw new Error("A versão não tem idioma no App Store Connect. Cadastre a localização uma vez.");
   }
-  if (preferred.attributes.whatsNew?.trim() && !replace) return;
-  await apple(`/v1/appStoreVersionLocalizations/${preferred.id}`, {
-    method: "PATCH",
-    body: {
-      data: {
-        type: "appStoreVersionLocalizations",
-        id: preferred.id,
-        attributes: { whatsNew: notes },
-      },
-    },
-  });
+  const targets = replace
+    ? locales
+    : locales.filter((item) => !item.attributes.whatsNew?.trim());
+  // Sem replace: se todos já têm texto, não sobrescreve.
+  if (targets.length === 0) return;
+  await Promise.all(
+    targets.map((locale) =>
+      apple(`/v1/appStoreVersionLocalizations/${locale.id}`, {
+        method: "PATCH",
+        body: {
+          data: {
+            type: "appStoreVersionLocalizations",
+            id: locale.id,
+            attributes: { whatsNew: notes },
+          },
+        },
+      }),
+    ),
+  );
 }
 
 export async function readIos(app: AppConfig): Promise<Cell> {
@@ -275,7 +385,10 @@ export async function readIos(app: AppConfig): Promise<Cell> {
       const draftBuild = await versionBuild(draft.id);
       pendingDraftBuildState = toBuildState(draftBuild ?? undefined);
     } else if (!draft) {
-      const newer = await findNewerValidBuild(app.iosAppId as string, liveName);
+      // Só conta build novo além do que já está no ar OU já submetido (em revisão/aprovado).
+      // Senão a versão em revisão reaparece como "Para preparar".
+      const baseline = higherVersion(liveName, fromStore);
+      const newer = await findNewerValidBuild(app.iosAppId as string, baseline);
       if (newer) pendingBuildLabel = newer.label;
     }
 
@@ -318,18 +431,28 @@ export async function listIosPrepareOptions(app: AppConfig): Promise<IosPrepareO
     for (const build of builds) {
       const marketing = marketingVersion(await buildAppVersion(build));
       const buildNumber = build.attributes.version?.trim() || "";
+      const ready = complianceReady(build);
+      const base = formatAppBuild(marketing, buildNumber);
       options.push({
         id: build.id,
         buildNumber,
         marketingVersion: marketing,
         processingState: build.attributes.processingState ?? "PROCESSING",
-        label: formatAppBuild(marketing, buildNumber),
+        usesNonExemptEncryption:
+          build.attributes.usesNonExemptEncryption === undefined
+            ? null
+            : build.attributes.usesNonExemptEncryption,
+        complianceReady: ready,
+        label: ready ? base : `${base} · Missing Compliance`,
       });
     }
     const valid = options.filter((item) => item.processingState === "VALID");
     const preferred =
+      valid.find((item) => item.complianceReady && draftVersion && item.marketingVersion === draftVersion) ??
       valid.find((item) => draftVersion && item.marketingVersion === draftVersion) ??
+      valid.find((item) => item.complianceReady && item.marketingVersion && liveName && compareVersions(item.marketingVersion, liveName) > 0) ??
       valid.find((item) => item.marketingVersion && liveName && compareVersions(item.marketingVersion, liveName) > 0) ??
+      valid.find((item) => item.complianceReady) ??
       valid[0] ??
       null;
     return {
@@ -348,6 +471,21 @@ export async function prepareIos(app: AppConfig, choice?: Omit<IosPrepareChoice,
   const appId = app.iosAppId;
   if (!appId) throw new Error("App sem iosAppId.");
   return serialize(`ios:${appId}`, async () => {
+    // Texto digitado no Preparar; se vier o fallback antigo do front, usa DEFAULT_RELEASE_NOTES / app.
+    const typedWhatsNew = choice?.whatsNew?.trim();
+    const legacyDefault = "Melhorias e correções.";
+    const whatsNew =
+      typedWhatsNew && typedWhatsNew !== legacyDefault
+        ? typedWhatsNew
+        : releaseNotesFor(app, typedWhatsNew === legacyDefault ? undefined : typedWhatsNew);
+    if (!whatsNew) throw new Error("What's New in This Version não pode ficar vazio.");
+    const releaseType: IosReleaseType = choice?.releaseType ?? "MANUAL";
+    const earliestReleaseDate = choice?.earliestReleaseDate?.trim();
+    if (releaseType === "SCHEDULED" && !earliestReleaseDate) {
+      throw new Error("Informe a data para liberação automática agendada.");
+    }
+    const phasedRelease = choice?.phasedRelease ?? true;
+
     const versions = await listVersions(appId);
     const builds = await listBuilds(appId, 20);
     const live = versions.find((item) => item.attributes.appStoreState === "READY_FOR_SALE");
@@ -404,22 +542,15 @@ export async function prepareIos(app: AppConfig, choice?: Omit<IosPrepareChoice,
           `Já existe o rascunho ${existingName}. Remova ou use esse rascunho antes de preparar ${versionString}.`,
         );
       }
-      version = await createVersion(appId, versionString);
+      version = await createVersion(appId, versionString, releaseType, earliestReleaseDate);
+    } else {
+      await applyReleaseSettings(version.id, releaseType, earliestReleaseDate);
     }
 
-    await apple(`/v1/appStoreVersions/${version.id}`, {
-      method: "PATCH",
-      body: {
-        data: {
-          type: "appStoreVersions",
-          id: version.id,
-          attributes: { releaseType: "MANUAL" },
-        },
-      },
-    });
+    await ensureExportComplianceExempt(build);
     await attachBuild(version.id, build.id);
-    await ensureWhatsNew(version.id, releaseNotesFor(app), false);
-    await ensurePhased(version.id);
+    await ensureWhatsNew(version.id, whatsNew, true);
+    await applyPhasedChoice(version.id, phasedRelease);
 
     const versionName = version.attributes.versionString ?? versionString;
     const buildLabel = formatAppBuild(marketing ?? versionString, build.attributes.version ?? null);
@@ -451,37 +582,84 @@ export async function reviewIos(app: AppConfig, notes?: string): Promise<string>
             : "O rascunho não tem build. Use Preparar versão antes de enviar.",
         );
       }
+      await ensureExportComplianceExempt(matched.build);
       await attachBuild(version.id, matched.build.id);
       storeBuild = matched.build;
+    } else {
+      await ensureExportComplianceExempt(storeBuild);
     }
 
-    await apple(`/v1/appStoreVersions/${version.id}`, {
-      method: "PATCH",
-      body: {
-        data: {
-          type: "appStoreVersions",
-          id: version.id,
-          attributes: { releaseType: "MANUAL" },
-        },
-      },
-    });
     const typed = notes?.trim();
-    await ensureWhatsNew(version.id, releaseNotesFor(app, notes), Boolean(typed && typed !== defaultReleaseNotes()));
-    await ensurePhased(version.id);
-    await apple("/v1/appStoreVersionSubmissions", {
-      method: "POST",
-      body: {
-        data: {
-          type: "appStoreVersionSubmissions",
-          relationships: {
-            appStoreVersion: { data: { type: "appStoreVersions", id: version.id } },
-          },
+    if (typed && typed !== defaultReleaseNotes()) {
+      await ensureWhatsNew(version.id, releaseNotesFor(app, notes), true);
+    }
+    await submitVersionForReview(appId, version.id);
+
+    return `Versão ${versionName} enviada para revisão.`;
+  });
+}
+
+/** Fluxo atual da Apple (reviewSubmissions). O POST em appStoreVersionSubmissions foi descontinuado. */
+async function submitVersionForReview(appId: string, versionId: string): Promise<void> {
+  const submissionId = await openReviewSubmission(appId);
+  await apple("/v1/reviewSubmissionItems", {
+    method: "POST",
+    body: {
+      data: {
+        type: "reviewSubmissionItems",
+        relationships: {
+          reviewSubmission: { data: { type: "reviewSubmissions", id: submissionId } },
+          appStoreVersion: { data: { type: "appStoreVersions", id: versionId } },
         },
       },
-    });
-
-    return `Versão ${versionName} enviada para revisão. A liberação será faseada em 7 dias.`;
+    },
   });
+  await apple(`/v1/reviewSubmissions/${submissionId}`, {
+    method: "PATCH",
+    body: {
+      data: {
+        type: "reviewSubmissions",
+        id: submissionId,
+        attributes: { submitted: true },
+      },
+    },
+  });
+}
+
+async function openReviewSubmission(appId: string): Promise<string> {
+  const existing = await findOpenReviewSubmission(appId);
+  if (existing) return existing;
+
+  const created = await apple<{ data?: { id?: string } }>("/v1/reviewSubmissions", {
+    method: "POST",
+    body: {
+      data: {
+        type: "reviewSubmissions",
+        attributes: { platform: "IOS" },
+        relationships: {
+          app: { data: { type: "apps", id: appId } },
+        },
+      },
+    },
+  });
+  const id = created.data?.id;
+  if (!id) throw new Error("A Apple não retornou o id da reviewSubmission.");
+  return id;
+}
+
+async function findOpenReviewSubmission(appId: string): Promise<string | null> {
+  try {
+    const listed = await apple<{
+      data?: { id: string; attributes?: { state?: string } }[];
+    }>(`/v1/reviewSubmissions?filter[app]=${encodeURIComponent(appId)}&filter[platform]=IOS`);
+    const open = (listed.data ?? []).find((item) => {
+      const state = item.attributes?.state ?? "";
+      return state === "READY_FOR_REVIEW" || state === "UNRESOLVED_ISSUES";
+    });
+    return open?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function resolveValidBuild(
@@ -498,6 +676,12 @@ async function resolveValidBuild(
     return { build, marketing };
   }
   return null;
+}
+
+/** Maior entre duas versões de marketing (ex.: live vs já submetida). */
+function higherVersion(left: string | null, right: string | null): string | null {
+  if (left && right) return compareVersions(left, right) >= 0 ? left : right;
+  return left ?? right;
 }
 
 async function findNewerValidBuild(
@@ -593,6 +777,20 @@ async function ensurePhased(versionId: string): Promise<void> {
       },
     },
   });
+}
+
+async function clearPhased(versionId: string): Promise<void> {
+  const phased = await readPhased(versionId);
+  if (!phased) return;
+  await apple(`/v1/appStoreVersionPhasedReleases/${phased.id}`, { method: "DELETE" });
+}
+
+async function applyPhasedChoice(versionId: string, phasedRelease: boolean): Promise<void> {
+  if (phasedRelease) {
+    await ensurePhased(versionId);
+    return;
+  }
+  await clearPhased(versionId);
 }
 
 async function updatePhased(id: string, phasedReleaseState: "ACTIVE" | "PAUSED" | "COMPLETE"): Promise<void> {

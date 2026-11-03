@@ -7,7 +7,7 @@ import { logger } from "./logger";
 import { platformName, preview } from "./eligibility";
 import { haltIos, listIosPrepareOptions, prepareIos, readIos, releaseIos, reviewIos } from "./appstore";
 import { haltAndroid, readAndroid, releaseAndroid, reviewAndroid } from "./play";
-import { mapPool } from "./pool";
+import { mapPool, serialize } from "./pool";
 import type { ActionName, ActionResult, BoardApp, Cell, IosPrepareChoice, IosPrepareOptions } from "./types";
 
 const cache = new Map<string, BoardApp>();
@@ -39,15 +39,40 @@ export function refreshedAt(): string | null {
   return storeMode() === "demo" ? new Date().toISOString() : lastRefresh;
 }
 
-export async function refreshApps(ids?: string[]): Promise<BoardApp[]> {
+export async function refreshApps(
+  ids?: string[],
+  platform?: "android" | "ios",
+): Promise<BoardApp[]> {
   if (storeMode() === "demo") return listApps();
   const configs = loadApps();
   const targets = ids?.length ? configs.filter((config) => ids.includes(config.id)) : configs;
-  await mapPool(targets, 4, async (config) => {
-    const [android, ios] = await Promise.all([readAndroidCell(config), readIosCell(config)]);
-    cache.set(config.id, decorate(config.id, config.name, config.project, android, ios, new Date().toISOString()));
+  const now = new Date().toISOString();
+  // Concorrência baixa: Apple/Play estouram rate limit com vários apps em paralelo.
+  await mapPool(targets, 2, async (config) => {
+    const previous = cache.get(config.id);
+    const shouldReadAndroid = !platform || platform === "android";
+    const shouldReadIos = !platform || platform === "ios";
+    const [android, ios] = await Promise.all([
+      shouldReadAndroid
+        ? readAndroidCell(config, previous?.android)
+        : Promise.resolve(
+            previous?.android ??
+              (config.androidPackage
+                ? cell({ platform: "android", status: "sem_build", detail: "Ainda não consultado." })
+                : unavailable("android", "Este app não tem androidPackage.")),
+          ),
+      shouldReadIos
+        ? readIosCell(config, previous?.ios)
+        : Promise.resolve(
+            previous?.ios ??
+              (config.iosAppId
+                ? cell({ platform: "ios", status: "sem_build", detail: "Ainda não consultado." })
+                : unavailable("ios", "Este app não tem iosAppId.")),
+          ),
+    ]);
+    cache.set(config.id, decorate(config.id, config.name, config.project, android, ios, now));
   });
-  lastRefresh = new Date().toISOString();
+  lastRefresh = now;
   return listApps();
 }
 
@@ -167,7 +192,14 @@ async function liveAction(
     return prepareIos(
       app,
       iosPrepare
-        ? { versionString: iosPrepare.versionString, buildId: iosPrepare.buildId }
+        ? {
+            versionString: iosPrepare.versionString,
+            buildId: iosPrepare.buildId,
+            whatsNew: iosPrepare.whatsNew,
+            releaseType: iosPrepare.releaseType,
+            earliestReleaseDate: iosPrepare.earliestReleaseDate,
+            phasedRelease: iosPrepare.phasedRelease,
+          }
         : undefined,
     );
   }
@@ -176,41 +208,83 @@ async function liveAction(
   return haltIos(app);
 }
 
-async function readAndroidCell(app: ReturnType<typeof loadApps>[number]): Promise<Cell> {
+function isRateLimitMessage(message: string): boolean {
+  return /too many requests|rate limit|try again later|slow down your request/i.test(message);
+}
+
+function keepPreviousOnRateLimit(previous: Cell | undefined, detail: string): Cell | null {
+  if (!previous || !isRateLimitMessage(detail)) return null;
+  if (previous.status === "erro" || previous.status === "sem_build" || previous.status === "indisponivel") {
+    return null;
+  }
+  return cell({
+    ...previous,
+    lastError: detail,
+    detail: previous.detail
+      ? `${previous.detail} · Leitura limitada pela loja; mantido o status anterior.`
+      : "Leitura limitada pela loja; mantido o status anterior.",
+  });
+}
+
+async function readStoreWithRetry(read: () => Promise<Cell>): Promise<Cell> {
+  try {
+    return await read();
+  } catch (error) {
+    const first = describeError(error);
+    if (!isRateLimitMessage(first)) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    return read();
+  }
+}
+
+async function readAndroidCell(
+  app: ReturnType<typeof loadApps>[number],
+  previous?: Cell,
+): Promise<Cell> {
   if (!app.androidPackage) return unavailable("android", "Este app não tem androidPackage.");
   if (!hasPlayCredentials()) return unavailable("android", "Defina PLAY_SERVICE_ACCOUNT_JSON.");
   try {
-    return await readAndroid(app);
+    return await readStoreWithRetry(() => readAndroid(app));
   } catch (error) {
     const detail = describeError(error);
     logger.error(
       { appId: app.id, platform: "android", message: detail },
       `falha ao consultar ${app.name}`,
     );
-    return cell({
-      platform: "android",
-      status: "erro",
-      detail,
-    });
+    return (
+      keepPreviousOnRateLimit(previous, detail) ??
+      cell({
+        platform: "android",
+        status: "erro",
+        detail,
+      })
+    );
   }
 }
 
-async function readIosCell(app: ReturnType<typeof loadApps>[number]): Promise<Cell> {
+async function readIosCell(
+  app: ReturnType<typeof loadApps>[number],
+  previous?: Cell,
+): Promise<Cell> {
   if (!app.iosAppId) return unavailable("ios", "Este app não tem iosAppId.");
   if (!hasAppleCredentials()) return unavailable("ios", "Defina a chave da App Store Connect API.");
   try {
-    return await readIos(app);
+    // Fila global da Apple: evita 429 ao abrir/atualizar o board com vários apps.
+    return await serialize("apple-api", () => readStoreWithRetry(() => readIos(app)));
   } catch (error) {
     const detail = describeError(error);
     logger.error(
       { appId: app.id, platform: "ios", message: detail },
       `falha ao consultar ${app.name}`,
     );
-    return cell({
-      platform: "ios",
-      status: "erro",
-      detail,
-    });
+    return (
+      keepPreviousOnRateLimit(previous, detail) ??
+      cell({
+        platform: "ios",
+        status: "erro",
+        detail,
+      })
+    );
   }
 }
 

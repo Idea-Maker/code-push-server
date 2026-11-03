@@ -177,7 +177,7 @@ export function mapIosStatus(input: {
       platform: "ios",
       status: "liberada",
       version,
-      label: "No ar",
+      label: "No ar 100%",
       canPrepare: pending.canPrepare,
       canReview: pending.canReview,
       detail: appendPending("", pending) || undefined,

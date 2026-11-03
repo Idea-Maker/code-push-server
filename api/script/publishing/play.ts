@@ -1,9 +1,21 @@
 import { GoogleAuth, type AuthClient } from "google-auth-library";
-import { androidTrack, defaultReleaseNotes, notesLanguage, playApiRoot, playAuthScope, playCredentials, releaseNotesFor, reviewFraction } from "./config";
+import {
+  androidTrack,
+  defaultReleaseNotes,
+  notesLanguage,
+  playApiRoot,
+  playAuthScope,
+  playConsolePublishingUrl,
+  playCredentials,
+  releaseNotesFor,
+  reviewFraction,
+} from "./config";
+import { cell } from "./cells";
 import { describeError } from "./errors";
 import {
   findAndroidReleaseName,
   formatPercent,
+  isAndroidRolloutLive,
   latestVersionCode,
   mapAndroidStatus,
   pickRicherAndroidReleaseName,
@@ -11,6 +23,7 @@ import {
   withReviewRelease,
   withTargetFraction,
   type RawRelease,
+  type ReleaseSummary,
 } from "./play-status";
 import { serialize } from "./pool";
 import type { AppConfig, Cell } from "./types";
@@ -19,6 +32,7 @@ type EditResponse = { id?: string };
 type BundlesResponse = { bundles?: { versionCode?: number }[] };
 type TrackResponse = { track?: string; releases?: RawRelease[] };
 type TracksListResponse = { tracks?: TrackResponse[] };
+type ReleaseSummariesResponse = { releases?: ReleaseSummary[] };
 
 type OpenedTrack = {
   editId: string;
@@ -26,6 +40,8 @@ type OpenedTrack = {
   latest: number | null;
   /** Nome com versionName, se existir em qualquer faixa (internal/alpha/…). */
   releaseName: string | null;
+  /** Lifecycle da Console (Em revisão / Pronto para publicar / …). */
+  lifecycleSummaries: ReleaseSummary[];
 };
 
 let auth: GoogleAuth | null = null;
@@ -70,6 +86,18 @@ async function abandon(packageName: string, editId: string): Promise<void> {
   await play(endpoint(packageName, `/edits/${editId}`), { method: "DELETE" }).catch(() => undefined);
 }
 
+async function listLifecycleSummaries(packageName: string, track: string): Promise<ReleaseSummary[]> {
+  try {
+    const body = await play<ReleaseSummariesResponse>(
+      endpoint(packageName, `/tracks/${encodeURIComponent(track)}/releases`),
+    );
+    return body.releases ?? [];
+  } catch {
+    // Contas/ambientes sem o endpoint novo caem no mapeamento pelo status do edit.
+    return [];
+  }
+}
+
 async function openTrack(app: AppConfig): Promise<OpenedTrack> {
   const packageName = app.androidPackage;
   if (!packageName) throw new Error("App sem androidPackage.");
@@ -78,10 +106,11 @@ async function openTrack(app: AppConfig): Promise<OpenedTrack> {
   const editId = edit.id;
   if (!editId) throw new Error("O Play não retornou o edit.");
   try {
-    const [bundles, trackBody, allTracks] = await Promise.all([
+    const [bundles, trackBody, allTracks, lifecycleSummaries] = await Promise.all([
       play<BundlesResponse>(endpoint(packageName, `/edits/${editId}/bundles`)),
       play<TrackResponse>(endpoint(packageName, `/edits/${editId}/tracks/${encodeURIComponent(track)}`)),
       play<TracksListResponse>(endpoint(packageName, `/edits/${editId}/tracks`)),
+      listLifecycleSummaries(packageName, track),
     ]);
     const releases = trackBody.releases ?? [];
     const latest = latestVersionCode((bundles.bundles ?? []).map((bundle) => bundle.versionCode));
@@ -94,7 +123,7 @@ async function openTrack(app: AppConfig): Promise<OpenedTrack> {
             findAndroidReleaseName(releases, latest),
             findAndroidReleaseName(otherReleases, latest),
           ) ?? null;
-    return { editId, releases, latest, releaseName };
+    return { editId, releases, latest, releaseName, lifecycleSummaries };
   } catch (error) {
     await abandon(packageName, editId);
     throw error;
@@ -120,17 +149,27 @@ async function commit(packageName: string, editId: string, track: string, releas
   }
 }
 
+function withAndroidConsoleUrl(mapped: Cell, app: AppConfig): Cell {
+  const consoleUrl = playConsolePublishingUrl(app);
+  if (!consoleUrl) return mapped;
+  return cell({ ...mapped, consoleUrl });
+}
+
 export async function readAndroid(app: AppConfig): Promise<Cell> {
   if (!app.androidPackage) return mapAndroidStatus({ configured: false, latestVersionCode: null, releases: [] });
   return serialize(`play:${app.androidPackage}`, async () => {
     const opened = await openTrack(app);
     await abandon(app.androidPackage as string, opened.editId);
-    return mapAndroidStatus({
-      configured: true,
-      latestVersionCode: opened.latest,
-      releases: opened.releases,
-      releaseName: opened.releaseName,
-    });
+    return withAndroidConsoleUrl(
+      mapAndroidStatus({
+        configured: true,
+        latestVersionCode: opened.latest,
+        releases: opened.releases,
+        releaseName: opened.releaseName,
+        lifecycleSummaries: opened.lifecycleSummaries,
+      }),
+      app,
+    );
   });
 }
 
@@ -161,10 +200,25 @@ export async function reviewAndroid(app: AppConfig, fraction = reviewFraction(),
 export async function releaseAndroid(app: AppConfig, fraction = 1): Promise<string> {
   if (!app.androidPackage) throw new Error("App sem androidPackage.");
   return serialize(`play:${app.androidPackage}`, () =>
-    changeAndroid(app, (opened) => ({
-      releases: withTargetFraction(opened.releases, fraction),
-      message: fraction >= 1 ? "Rollout promovido para 100%." : `Rollout atualizado para ${formatPercent(fraction)}.`,
-    })),
+    changeAndroid(app, (opened) => {
+      const live = isAndroidRolloutLive(opened.releases, opened.latest, opened.lifecycleSummaries);
+      if (!live) {
+        const consoleUrl = playConsolePublishingUrl(app);
+        throw new Error(
+          "A primeira publicação com Publicação Gerenciada é só na Play Console (a API não tem Publicar alterações). " +
+            (consoleUrl
+              ? `Abra: ${consoleUrl}`
+              : "Configure PLAY_CONSOLE_DEVELOPER_ID e playConsoleAppId para o link direto no board."),
+        );
+      }
+      return {
+        releases: withTargetFraction(opened.releases, fraction),
+        message:
+          fraction >= 1
+            ? "Rollout promovido para 100%."
+            : `Rollout atualizado para ${formatPercent(fraction)}.`,
+      };
+    }),
   );
 }
 

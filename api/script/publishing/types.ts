@@ -21,6 +21,11 @@ export type AppConfig = {
   androidPackage?: string;
   /** production, beta, alpha ou internal. O padrão é production. */
   androidTrack?: string;
+  /**
+   * ID numérico do app na Play Console (trecho /app/{id}/ da URL).
+   * Usado para montar o link direto da Visão geral da publicação.
+   */
+  playConsoleAppId?: string;
   iosAppId?: string;
   releaseNotes?: string;
 };
@@ -39,6 +44,13 @@ export type Cell = {
   inRollout: boolean;
   /** Android em 1%: a Google pode ainda estar revisando. */
   releaseUncertain: boolean;
+  /**
+   * Android: aprovado com Publicação Gerenciada — a 1ª publicação só na Console
+   * (a API não tem o botão Publicar alterações).
+   */
+  needsConsolePublish: boolean;
+  /** Link da Play Console / App Store Connect quando disponível. */
+  consoleUrl: string | null;
   lastError: string | null;
 };
 
@@ -59,6 +71,8 @@ export type ActionTarget = {
   platform: Platform;
   label: string;
   releaseUncertain: boolean;
+  /** Já está com parte dos usuários (rollout Play / faseado Apple). */
+  inRollout: boolean;
 };
 
 export type SkippedTarget = ActionTarget & {
@@ -73,10 +87,18 @@ export type ActionResult = {
   message: string;
 };
 
+export type IosReleaseType = "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED";
+
 export type IosPrepareChoice = {
   appId: string;
   versionString: string;
   buildId: string;
+  whatsNew: string;
+  releaseType: IosReleaseType;
+  /** ISO-8601; obrigatório quando releaseType é SCHEDULED. */
+  earliestReleaseDate?: string;
+  /** true = phased de 7 dias; false = todos os usuários de imediato. */
+  phasedRelease: boolean;
 };
 
 export type IosBuildOption = {
@@ -85,6 +107,9 @@ export type IosBuildOption = {
   marketingVersion: string | null;
   processingState: string;
   label: string;
+  /** null = Missing Compliance na Console. */
+  usesNonExemptEncryption: boolean | null;
+  complianceReady: boolean;
 };
 
 export type IosPrepareOptions = {

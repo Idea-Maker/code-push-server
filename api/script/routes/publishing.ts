@@ -39,7 +39,11 @@ export function getPublishingRouter(): Router {
       const ids = Array.isArray(req.body?.appIds)
         ? req.body.appIds.filter((id: unknown): id is string => typeof id === "string")
         : undefined;
-      res.json(payload(await refreshApps(ids)));
+      const platform =
+        req.body?.platform === "android" || req.body?.platform === "ios"
+          ? (req.body.platform as "android" | "ios")
+          : undefined;
+      res.json(payload(await refreshApps(ids, platform)));
     } catch (error) {
       next(error);
     }
@@ -159,6 +163,8 @@ function parseIds(value: unknown): string[] | "all" {
   throw new HttpError(400, 'Informe appIds como "all" ou uma lista de ids.');
 }
 
+const IOS_RELEASE_TYPES = new Set(["MANUAL", "AFTER_APPROVAL", "SCHEDULED"]);
+
 function parseIosPrepare(value: unknown, action: ActionName): IosPrepareChoice[] | undefined {
   if (action !== "prepare" || value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) throw new HttpError(400, "iosPrepare precisa ser uma lista.");
@@ -176,10 +182,35 @@ function parseIosPrepare(value: unknown, action: ActionName): IosPrepareChoice[]
     if (typeof row.buildId !== "string" || !row.buildId.trim()) {
       throw new HttpError(400, `Escolha o build para ${row.appId}.`);
     }
+    if (typeof row.whatsNew !== "string" || !row.whatsNew.trim()) {
+      throw new HttpError(400, "What's New in This Version não pode ficar vazio.");
+    }
+    if (typeof row.releaseType !== "string" || !IOS_RELEASE_TYPES.has(row.releaseType)) {
+      throw new HttpError(400, "Escolha o tipo de App Store Version Release.");
+    }
+    if (typeof row.phasedRelease !== "boolean") {
+      throw new HttpError(400, "Informe se o update usa phased release de 7 dias.");
+    }
+    const earliest =
+      typeof row.earliestReleaseDate === "string" && row.earliestReleaseDate.trim()
+        ? row.earliestReleaseDate.trim()
+        : undefined;
+    if (row.releaseType === "SCHEDULED") {
+      if (!earliest) {
+        throw new HttpError(400, "Informe a data para liberação automática agendada.");
+      }
+      if (Number.isNaN(Date.parse(earliest))) {
+        throw new HttpError(400, "A data de liberação agendada é inválida.");
+      }
+    }
     return {
       appId: row.appId.trim(),
       versionString: row.versionString.trim(),
       buildId: row.buildId.trim(),
+      whatsNew: row.whatsNew.trim(),
+      releaseType: row.releaseType as IosPrepareChoice["releaseType"],
+      earliestReleaseDate: row.releaseType === "SCHEDULED" ? earliest : undefined,
+      phasedRelease: row.phasedRelease,
     };
   });
 }

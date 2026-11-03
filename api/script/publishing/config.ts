@@ -128,7 +128,10 @@ function withoutTrailingSlash(value: string): string {
 }
 
 export function defaultReleaseNotes(): string {
-  return process.env.DEFAULT_RELEASE_NOTES?.trim() || "Melhorias e correções.";
+  return (
+    process.env.DEFAULT_RELEASE_NOTES?.trim() ||
+    "Realizamos melhorias, ajustes e corrigimos alguns bugs para que sua experiência seja ainda mais completa!"
+  );
 }
 
 export function releaseNotesFor(app: AppConfig, typed?: string): string {
@@ -141,6 +144,22 @@ export function releaseNotesFor(app: AppConfig, typed?: string): string {
 
 export function androidTrack(app: AppConfig): string {
   return app.androidTrack?.trim() || "production";
+}
+
+/** ID do desenvolvedor na URL da Play Console (…/developers/{id}/…). */
+export function playConsoleDeveloperId(): string {
+  return process.env.PLAY_CONSOLE_DEVELOPER_ID?.trim() || "";
+}
+
+/**
+ * Link da Visão geral da publicação do app.
+ * Precisa de PLAY_CONSOLE_DEVELOPER_ID + playConsoleAppId no apps.json.
+ */
+export function playConsolePublishingUrl(app: AppConfig): string | null {
+  const developerId = playConsoleDeveloperId();
+  const appId = app.playConsoleAppId?.trim();
+  if (!developerId || !appId) return null;
+  return `https://play.google.com/console/u/0/developers/${encodeURIComponent(developerId)}/app/${encodeURIComponent(appId)}/publishing`;
 }
 
 function appsPath(): string {
@@ -185,6 +204,7 @@ export function loadApps(): AppConfig[] {
       project,
       androidPackage,
       androidTrack: app.androidTrack?.trim() || undefined,
+      playConsoleAppId: app.playConsoleAppId?.trim() || undefined,
       iosAppId,
       releaseNotes: app.releaseNotes?.trim() || undefined,
     };

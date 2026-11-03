@@ -33,6 +33,7 @@ export function preview(
         platform,
         label: item.label,
         releaseUncertain: item.releaseUncertain,
+        inRollout: item.inRollout,
       };
       if (isEligible(item, input.action, explicit)) {
         included.push(target);
