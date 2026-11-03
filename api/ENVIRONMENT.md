@@ -82,3 +82,14 @@ To enable KeyVault credential resolution, set:
 - `CLIENT_ID`: The client ID of an Active Directory app that has access to your KeyVault account
 - `CERTIFICATE_THUMBPRINT`: The thumbprint of the certificate associated with your Active Directory app (for which a .pfx has been uploaded to your certificate store)
 - `REFRESH_CREDENTIALS_INTERVAL` (Optional): The frequency, in milliseconds, to re-retrieve credentials from Key Vault (defaults to one day, currently only storage keys are supported)
+
+### Store publishing (Google Play / App Store Connect)
+
+Board e ações de loja nas rotas `/publishing`. Detalhes, checklist e `apps.json`: [docs/publishing.md](./docs/publishing.md).
+
+- `STORE_MODE`: `auto` | `demo` | `live`
+- `PLAY_SERVICE_ACCOUNT_JSON`: JSON (ou path) da conta de serviço Play
+- `ASC_ISSUER_ID`, `ASC_KEY_ID`, `ASC_PRIVATE_KEY`: chave App Store Connect
+- `PLAY_REVIEW_FRACTION`, `PLAY_NOTES_LANGUAGE`, `PLAY_API_URL`, `PLAY_AUTH_SCOPE`
+- `ASC_API_URL`, `ASC_JWT_AUDIENCE`
+- `APPS_FILE`, `DEFAULT_RELEASE_NOTES`, `PLAY_CONSOLE_DEVELOPER_ID`

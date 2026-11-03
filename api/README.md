@@ -46,6 +46,8 @@ By default, local CodePush server runs on HTTP. To run CodePush Server on HTTPS:
 
 For more detailed instructions and configuration options, please refer to the [ENVIRONMENT.md](./ENVIRONMENT.md) file.
 
+Store publishing (Play / App Store Connect) lives under `/publishing` in this same API. Setup and env vars: [docs/publishing.md](./docs/publishing.md).
+
 ### Azure
 
 CodePush Server is designed to run as [Azure App Service](https://learn.microsoft.com/en-us/azure/app-service/overview).
