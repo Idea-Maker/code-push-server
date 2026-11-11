@@ -162,6 +162,13 @@ export function playConsolePublishingUrl(app: AppConfig): string | null {
   return `https://play.google.com/console/u/0/developers/${encodeURIComponent(developerId)}/app/${encodeURIComponent(appId)}/publishing`;
 }
 
+/** Página de distribuição do app no App Store Connect. Usa o iosAppId do catálogo. */
+export function appStoreConnectUrl(app: AppConfig): string | null {
+  const appId = app.iosAppId?.trim();
+  if (!appId || !/^\d+$/.test(appId)) return null;
+  return `https://appstoreconnect.apple.com/apps/${encodeURIComponent(appId)}/distribution`;
+}
+
 function appsPath(): string {
   const configured = process.env.APPS_FILE?.trim() || path.join(rootDir, "config", "apps.json");
   return path.isAbsolute(configured) ? configured : path.resolve(rootDir, configured);

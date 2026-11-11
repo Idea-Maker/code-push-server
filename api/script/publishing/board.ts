@@ -1,12 +1,12 @@
 import { recordResult, readAudit, type AuditEntry } from "./audit";
 import { cell, decorate, unavailable } from "./cells";
-import { hasAppleCredentials, hasPlayCredentials, loadApps, storeMode } from "./config";
+import { appStoreConnectUrl, hasAppleCredentials, hasPlayCredentials, loadApps, storeMode } from "./config";
 import { applyDemo, demoApps, demoPrepareOptions, resetDemo, stampDemoError } from "./demo";
 import { describeError, HttpError } from "./errors";
 import { logger } from "./logger";
 import { platformName, preview } from "./eligibility";
 import { haltIos, listIosPrepareOptions, prepareIos, readIos, releaseIos, reviewIos } from "./appstore";
-import { haltAndroid, readAndroid, releaseAndroid, reviewAndroid } from "./play";
+import { haltAndroid, prepareAndroid, readAndroid, releaseAndroid, reviewAndroid } from "./play";
 import { mapPool, serialize } from "./pool";
 import type { ActionName, ActionResult, BoardApp, Cell, IosPrepareChoice, IosPrepareOptions } from "./types";
 
@@ -183,7 +183,7 @@ async function liveAction(
   iosPrepare?: IosPrepareChoice,
 ) {
   if (platform === "android") {
-    if (action === "prepare") throw new Error("Preparar versão só existe no iOS.");
+    if (action === "prepare") return prepareAndroid(app, releaseNotes, androidFraction);
     if (action === "review") return reviewAndroid(app, androidFraction, releaseNotes);
     if (action === "release") return releaseAndroid(app, androidFraction);
     return haltAndroid(app);
@@ -267,25 +267,35 @@ async function readIosCell(
   previous?: Cell,
 ): Promise<Cell> {
   if (!app.iosAppId) return unavailable("ios", "Este app não tem iosAppId.");
-  if (!hasAppleCredentials()) return unavailable("ios", "Defina a chave da App Store Connect API.");
+  if (!hasAppleCredentials()) {
+    return withIosConsoleUrl(app, unavailable("ios", "Defina a chave da App Store Connect API."));
+  }
   try {
     // Fila global da Apple: evita 429 ao abrir/atualizar o board com vários apps.
-    return await serialize("apple-api", () => readStoreWithRetry(() => readIos(app)));
+    const mapped = await serialize("apple-api", () => readStoreWithRetry(() => readIos(app)));
+    return withIosConsoleUrl(app, mapped);
   } catch (error) {
     const detail = describeError(error);
     logger.error(
       { appId: app.id, platform: "ios", message: detail },
       `falha ao consultar ${app.name}`,
     );
-    return (
+    return withIosConsoleUrl(
+      app,
       keepPreviousOnRateLimit(previous, detail) ??
-      cell({
-        platform: "ios",
-        status: "erro",
-        detail,
-      })
+        cell({
+          platform: "ios",
+          status: "erro",
+          detail,
+        }),
     );
   }
+}
+
+function withIosConsoleUrl(app: ReturnType<typeof loadApps>[number], mapped: Cell): Cell {
+  const consoleUrl = appStoreConnectUrl(app);
+  if (!consoleUrl) return mapped;
+  return cell({ ...mapped, consoleUrl });
 }
 
 function rememberError(appId: string, platform: "android" | "ios", message: string): void {

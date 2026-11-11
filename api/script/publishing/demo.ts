@@ -1,4 +1,5 @@
 import { cell, decorate, unavailable } from "./cells";
+import { appStoreConnectUrl } from "./config";
 import { formatPercent } from "./play-status";
 import type {
   ActionName,
@@ -67,7 +68,9 @@ const SPECIAL: Record<string, Partial<Record<Platform, () => Cell>>> = {
         canRelease: true,
         canHalt: true,
         inRollout: true,
-        detail: "Já está em rollout. Use Aumentar rollout para subir a %.",
+        canPrepare: true,
+        detail:
+          "Já está em rollout. Use Aumentar rollout para subir a %. Bundle 4.3.0 (220) disponível. Use Preparar para criar o rascunho sem alterar o rollout.",
       }),
     ios: () => base("ios", "em_revisao", { detail: "Na fila da Apple." }),
   },
@@ -81,7 +84,12 @@ const SPECIAL: Record<string, Partial<Record<Platform, () => Cell>>> = {
       }),
   },
   "nome-07": {
-    android: () => base("android", "liberada", { label: "No ar 100%" }),
+    android: () =>
+      base("android", "liberada", {
+        label: "No ar 100%",
+        canPrepare: true,
+        detail: "Bundle 4.3.0 (220) disponível. Use Preparar para criar o rascunho.",
+      }),
     ios: () =>
       base("ios", "liberada", {
         label: "No ar 100%",
@@ -114,7 +122,9 @@ const SPECIAL: Record<string, Partial<Record<Platform, () => Cell>>> = {
         canRelease: true,
         canHalt: true,
         inRollout: true,
-        detail: "Já está em rollout. Use Aumentar rollout para subir a %.",
+        canPrepare: true,
+        detail:
+          "Já está em rollout. Use Aumentar rollout para subir a %. Bundle 4.2.0 (210) disponível. Use Preparar para criar o rascunho sem alterar o rollout.",
       }),
     ios: () => base("ios", "sem_build", { version: "—", detail: "Build ainda processando na Apple." }),
   },
@@ -144,7 +154,9 @@ export function demoApps(configs: readonly AppConfig[]): BoardApp[] {
   return configs.map((config) => {
     const saved = overrides.get(config.id);
     const android = saved?.android ?? initialCell(config.id, "android", Boolean(config.androidPackage));
-    const ios = saved?.ios ?? initialCell(config.id, "ios", Boolean(config.iosAppId));
+    const iosBase = saved?.ios ?? initialCell(config.id, "ios", Boolean(config.iosAppId));
+    const iosUrl = appStoreConnectUrl(config);
+    const ios = iosUrl ? cell({ ...iosBase, consoleUrl: iosUrl }) : iosBase;
     return decorate(config.id, config.name, config.project, android, ios, refreshedAt);
   });
 }
@@ -203,20 +215,25 @@ export function applyDemo(
   prepareChoice?: IosPrepareChoice,
 ): string {
   const current = app[platform];
-  if (action === "prepare" && platform !== "ios") {
-    throw new Error("Preparar versão só existe no iOS.");
-  }
   const next = nextCell(current, action, fraction, prepareChoice);
   const saved = overrides.get(app.id) ?? {};
   saved[platform] = next;
   overrides.set(app.id, saved);
   if (action === "prepare") {
+    if (platform === "android") {
+      const percent = formatPercent(fraction);
+      return current.inRollout
+        ? `Rascunho criado com rollout inicial de ${percent}. O rollout em andamento não foi alterado.`
+        : `Rascunho criado com rollout inicial de ${percent}.`;
+    }
     const version = prepareChoice?.versionString?.trim() || (current.version === "—" ? "4.2.0" : current.version);
     return `Rascunho ${version} criado com build ${prepareChoice?.buildId ?? "demo"}.`;
   }
   if (action === "review") {
+    const staged =
+      platform === "android" && typeof current.plannedFraction === "number" ? current.plannedFraction : fraction;
     return platform === "android"
-      ? `Enviado para revisão em rollout de ${formatPercent(fraction)}.`
+      ? `Enviado para revisão em rollout de ${formatPercent(staged)}.`
       : "Enviado para revisão.";
   }
   if (action === "halt") return platform === "ios" ? "Lançamento faseado pausado." : "Rollout pausado.";
@@ -240,6 +257,26 @@ function nextCell(
   prepareChoice?: IosPrepareChoice,
 ): Cell {
   if (action === "prepare") {
+    if (current.platform === "android") {
+      const percent = formatPercent(fraction);
+      if (current.inRollout || current.status === "pausada") {
+        return cell({
+          ...current,
+          canPrepare: false,
+          canReview: false,
+          plannedFraction: fraction,
+          detail: `Rascunho da próxima versão criado com rollout inicial de ${percent}. Enviar para revisão fica disponível quando o rollout atual for concluído. O rollout segue disponível.`,
+        });
+      }
+      return cell({
+        platform: "android",
+        status: "pronta",
+        version: current.pendingVersion || (current.version === "—" ? VERSION : current.version),
+        canReview: true,
+        plannedFraction: fraction,
+        detail: `Release em rascunho. Rollout inicial de ${percent}. Enviar para revisão usa esta porcentagem e as notas já definidas.`,
+      });
+    }
     const version = prepareChoice?.versionString?.trim()
       ? `${prepareChoice.versionString.trim()} (${prepareChoice.buildId.replace(/^demo-build-/, "") || "210"})`
       : current.version === "—"
@@ -255,7 +292,8 @@ function nextCell(
   }
   if (action === "review") {
     const android = current.platform === "android";
-    const underReview = android && fraction <= 0.02;
+    const staged = android && typeof current.plannedFraction === "number" ? current.plannedFraction : fraction;
+    const underReview = android && staged <= 0.02;
     if (android && underReview) {
       return cell({
         platform: "android",
@@ -277,7 +315,7 @@ function nextCell(
         label: "Pronto para publicar",
         needsConsolePublish: true,
         consoleUrl: "https://play.google.com/console/u/0/developers/demo/app/demo/publishing",
-        detail: `Aprovado (${formatPercent(fraction)}). Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.`,
+        detail: `Aprovado (${formatPercent(staged)}). Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.`,
       });
     }
     return cell({

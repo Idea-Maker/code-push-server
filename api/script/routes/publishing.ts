@@ -143,7 +143,7 @@ function parseAndroidFraction(value: unknown, action: ActionName): number {
 }
 
 function parseReleaseNotes(value: unknown, action: ActionName): string | undefined {
-  if (action !== "review" || value === undefined || value === null) return undefined;
+  if ((action !== "review" && action !== "prepare") || value === undefined || value === null) return undefined;
   if (typeof value !== "string") throw new HttpError(400, "As notas de versão precisam ser um texto.");
   const notes = value.trim();
   if (!notes) throw new HttpError(400, "As notas de versão não podem ficar vazias.");

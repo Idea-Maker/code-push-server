@@ -10,15 +10,17 @@ import {
   releaseNotesFor,
   reviewFraction,
 } from "./config";
+import { forgetAndroidDraft, readAndroidDraft, rememberAndroidDraft } from "./android-draft-plans";
 import { cell } from "./cells";
 import { describeError } from "./errors";
 import {
   findAndroidReleaseName,
   formatPercent,
   isAndroidRolloutLive,
-  latestVersionCode,
+  versionCodeForBoard,
   mapAndroidStatus,
   pickRicherAndroidReleaseName,
+  withDraftRelease,
   withHaltedRelease,
   withReviewRelease,
   withTargetFraction,
@@ -113,7 +115,11 @@ async function openTrack(app: AppConfig): Promise<OpenedTrack> {
       listLifecycleSummaries(packageName, track),
     ]);
     const releases = trackBody.releases ?? [];
-    const latest = latestVersionCode((bundles.bundles ?? []).map((bundle) => bundle.versionCode));
+    const latest = versionCodeForBoard(
+      (bundles.bundles ?? []).map((bundle) => bundle.versionCode),
+      releases,
+      lifecycleSummaries,
+    );
     const otherReleases = (allTracks.tracks ?? []).flatMap((item) => item.releases ?? []);
     const releaseName =
       latest === null
@@ -130,23 +136,73 @@ async function openTrack(app: AppConfig): Promise<OpenedTrack> {
   }
 }
 
-async function commit(packageName: string, editId: string, track: string, releases: RawRelease[]): Promise<void> {
+async function commitEdit(
+  packageName: string,
+  editId: string,
+  changesNotSentForReview: boolean,
+): Promise<void> {
+  const baseParams: Record<string, string> = {
+    changesInReviewBehavior: "ERROR_IF_IN_REVIEW",
+  };
+  const preferred = changesNotSentForReview
+    ? { ...baseParams, changesNotSentForReview: "true" }
+    : baseParams;
+  try {
+    await play(endpoint(packageName, `/edits/${editId}:commit`), {
+      method: "POST",
+      params: preferred,
+    });
+    return;
+  } catch (error) {
+    const message = describeError(error);
+    // App sem rejeição pendente: a Play manda revisão sozinha e rejeita o parâmetro.
+    if (changesNotSentForReview && /must not be set/i.test(message)) {
+      await play(endpoint(packageName, `/edits/${editId}:commit`), {
+        method: "POST",
+        params: baseParams,
+      });
+      return;
+    }
+    // Submissão anterior rejeitada: a Play exige o parâmetro.
+    if (!changesNotSentForReview && /changesNotSentForReview to true/i.test(message)) {
+      await play(endpoint(packageName, `/edits/${editId}:commit`), {
+        method: "POST",
+        params: { ...baseParams, changesNotSentForReview: "true" },
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+async function commit(
+  packageName: string,
+  editId: string,
+  track: string,
+  releases: RawRelease[],
+  changesNotSentForReview = false,
+): Promise<void> {
   try {
     await play(endpoint(packageName, `/edits/${editId}/tracks/${encodeURIComponent(track)}`), {
       method: "PUT",
       data: { track, releases },
     });
-    await play(endpoint(packageName, `/edits/${editId}:commit`), {
-      method: "POST",
-      params: {
-        changesNotSentForReview: "false",
-        changesInReviewBehavior: "ERROR_IF_IN_REVIEW",
-      },
-    });
+    await commitEdit(packageName, editId, changesNotSentForReview);
   } catch (error) {
     await abandon(packageName, editId);
     throw error;
   }
+}
+
+function withStoredDraftPlan(mapped: Cell, packageName: string, versionCode: number | null): Cell {
+  if (versionCode === null) return mapped;
+  const plan = readAndroidDraft(packageName, versionCode);
+  if (!plan) return mapped;
+  const percent = formatPercent(plan.fraction);
+  const detail = mapped.detail.includes(percent)
+    ? mapped.detail
+    : [mapped.detail, `Rollout inicial definido na preparação: ${percent}.`].filter((part) => part.trim()).join(" ");
+  return cell({ ...mapped, plannedFraction: plan.fraction, detail });
 }
 
 function withAndroidConsoleUrl(mapped: Cell, app: AppConfig): Cell {
@@ -161,37 +217,63 @@ export async function readAndroid(app: AppConfig): Promise<Cell> {
     const opened = await openTrack(app);
     await abandon(app.androidPackage as string, opened.editId);
     return withAndroidConsoleUrl(
-      mapAndroidStatus({
-        configured: true,
-        latestVersionCode: opened.latest,
-        releases: opened.releases,
-        releaseName: opened.releaseName,
-        lifecycleSummaries: opened.lifecycleSummaries,
-      }),
+      withStoredDraftPlan(
+        mapAndroidStatus({
+          configured: true,
+          latestVersionCode: opened.latest,
+          releases: opened.releases,
+          releaseName: opened.releaseName,
+          lifecycleSummaries: opened.lifecycleSummaries,
+        }),
+        app.androidPackage as string,
+        opened.latest,
+      ),
       app,
     );
   });
+}
+
+export async function prepareAndroid(app: AppConfig, notes?: string, fraction = reviewFraction()): Promise<string> {
+  const packageName = app.androidPackage;
+  if (!packageName) throw new Error("App sem androidPackage.");
+  const text = releaseNotesFor(app, notes);
+  return serialize(`play:${packageName}`, () =>
+    changeAndroid(app, (opened) => {
+      if (opened.latest === null) throw new Error("Nenhum AAB encontrado. O CI ainda não enviou o bundle.");
+      const versionCode = opened.latest;
+      return {
+        releases: withDraftRelease(opened.releases, versionCode, text, notesLanguage(), opened.releaseName),
+        message: `Rascunho do version code ${versionCode} criado com rollout inicial de ${formatPercent(fraction)}. O rollout em andamento não foi alterado.`,
+        changesNotSentForReview: true,
+        onCommitted: () => rememberAndroidDraft(packageName, versionCode, { fraction, notes: text }),
+      };
+    }),
+  );
 }
 
 export async function reviewAndroid(app: AppConfig, fraction = reviewFraction(), notes?: string): Promise<string> {
   const packageName = app.androidPackage;
   if (!packageName) throw new Error("App sem androidPackage.");
   const typed = notes?.trim();
-  const replaceNotes = Boolean(typed && typed !== defaultReleaseNotes());
   return serialize(`play:${packageName}`, () =>
     changeAndroid(app, (opened) => {
       if (opened.latest === null) throw new Error("Nenhum AAB encontrado. O CI ainda não enviou o bundle.");
+      const versionCode = opened.latest;
+      const stored = readAndroidDraft(packageName, versionCode);
+      const staged = stored?.fraction ?? fraction;
+      const replaceNotes = stored ? false : Boolean(typed && typed !== defaultReleaseNotes());
       return {
         releases: withReviewRelease(
           opened.releases,
-          opened.latest,
-          releaseNotesFor(app, notes),
-          fraction,
+          versionCode,
+          stored?.notes || releaseNotesFor(app, notes),
+          staged,
           notesLanguage(),
           replaceNotes,
           opened.releaseName,
         ),
-        message: `Version code ${opened.latest} enviado para revisão em rollout de ${formatPercent(fraction)}.`,
+        message: `Version code ${versionCode} enviado para revisão em rollout de ${formatPercent(staged)}.`,
+        onCommitted: () => forgetAndroidDraft(packageName, versionCode),
       };
     }),
   );
@@ -235,13 +317,25 @@ export async function haltAndroid(app: AppConfig): Promise<string> {
 async function changeAndroid(
   app: AppConfig,
   // eslint-disable-next-line no-unused-vars
-  change: (opened: OpenedTrack) => { releases: RawRelease[]; message: string },
+  change: (opened: OpenedTrack) => {
+    releases: RawRelease[];
+    message: string;
+    changesNotSentForReview?: boolean;
+    onCommitted?: () => void;
+  },
 ): Promise<string> {
   const packageName = app.androidPackage as string;
   const opened = await openTrack(app);
   try {
     const next = change(opened);
-    await commit(packageName, opened.editId, androidTrack(app), next.releases);
+    await commit(
+      packageName,
+      opened.editId,
+      androidTrack(app),
+      next.releases,
+      next.changesNotSentForReview,
+    );
+    next.onCommitted?.();
     return next.message;
   } catch (error) {
     await abandon(packageName, opened.editId);

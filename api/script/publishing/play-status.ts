@@ -54,6 +54,133 @@ export function findAndroidReleaseName(
   return pickRicherAndroidReleaseName(versionCode, ...matches.map((release) => release.name));
 }
 
+export function releaseVersionCode(release: RawRelease): number | null {
+  const codes = (release.versionCodes ?? [])
+    .map((code) => Number(code))
+    .filter((code) => Number.isFinite(code));
+  if (codes.length === 0) return null;
+  return Math.max(...codes);
+}
+
+const ACTIONABLE_LIFECYCLE = new Set([
+  "RELEASE_LIFECYCLE_STATE_DRAFT",
+  "RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW",
+  "RELEASE_LIFECYCLE_STATE_IN_REVIEW",
+  "RELEASE_LIFECYCLE_STATE_APPROVED_NOT_PUBLISHED",
+  "RELEASE_LIFECYCLE_STATE_NOT_APPROVED",
+]);
+
+/**
+ * Versão que o board pode preparar ou revisar.
+ * A biblioteca de AABs guarda código antigo para sempre. Só entra aqui release
+ * que a faixa ou o lifecycle da Play ainda mostram (rascunho, revisão, etc.).
+ */
+export function versionCodeForBoard(
+  bundleCodes: readonly (number | undefined)[],
+  releases: readonly RawRelease[],
+  lifecycleSummaries: readonly ReleaseSummary[] = [],
+): number | null {
+  const uploaded = bundleCodes.filter((code): code is number => typeof code === "number" && Number.isFinite(code));
+  const actionable: number[] = [];
+
+  for (const release of releases) {
+    if (release.status !== "draft") continue;
+    const code = releaseVersionCode(release);
+    if (code !== null) actionable.push(code);
+  }
+
+  for (const summary of lifecycleSummaries) {
+    if (!summary.releaseLifecycleState || !ACTIONABLE_LIFECYCLE.has(summary.releaseLifecycleState)) continue;
+    for (const artifact of summary.activeArtifacts ?? []) {
+      if (typeof artifact.versionCode === "number" && Number.isFinite(artifact.versionCode)) {
+        actionable.push(artifact.versionCode);
+      }
+    }
+  }
+
+  if (actionable.length > 0) return Math.max(...actionable);
+
+  const open = releases.find((release) => release.status === "inProgress" || release.status === "halted");
+  const openCode = open ? releaseVersionCode(open) : null;
+  if (openCode !== null) return openCode;
+
+  const completed = releases
+    .map((release) => (release.status === "completed" ? releaseVersionCode(release) : null))
+    .filter((code): code is number => code !== null);
+  if (completed.length > 0) return Math.max(...completed);
+
+  return uploaded.length > 0 ? Math.max(...uploaded) : null;
+}
+
+/**
+ * Com uma release mais nova na faixa, o rollout/halt da versão anterior continua
+ * sendo o status do board. Essa release nova vira etapa de preparação.
+ */
+export function pickAndroidFocus(releases: readonly RawRelease[], latest: number): RawRelease | undefined {
+  const open = releases.find((release) => release.status === "inProgress" || release.status === "halted");
+  const openCode = open ? releaseVersionCode(open) : null;
+  if (open && openCode !== null && openCode !== latest) return open;
+
+  const onLatest = releases.find((release) =>
+    (release.versionCodes ?? []).some((code) => Number(code) === latest),
+  );
+  if (onLatest) return onLatest;
+  if (open) return open;
+
+  return releases
+    .filter((release) => release.status === "completed")
+    .reduce<RawRelease | undefined>((best, release) => {
+      if (!best) return release;
+      return (releaseVersionCode(release) ?? -1) > (releaseVersionCode(best) ?? -1) ? release : best;
+    }, undefined);
+}
+
+function pendingBundleLabel(latest: number, releaseName?: string | null): string {
+  return formatAndroidReleaseName(pickRicherAndroidReleaseName(latest, releaseName), latest);
+}
+
+function describeAndroidPending(
+  releases: readonly RawRelease[],
+  latest: number,
+  focusCode: number,
+  releaseName?: string | null,
+): { canPrepare: boolean; canReview: boolean; note: string; pendingVersion: string | null } {
+  if (latest <= focusCode) return { canPrepare: false, canReview: false, note: "", pendingVersion: null };
+  const label = pendingBundleLabel(latest, releaseName);
+  const pending = releases.find((release) =>
+    (release.versionCodes ?? []).some((code) => Number(code) === latest),
+  );
+  const blocking = releases.some((release) => {
+    if (release.status !== "inProgress" && release.status !== "halted") return false;
+    return releaseVersionCode(release) !== latest;
+  });
+  if (pending?.status === "draft") {
+    if (blocking) {
+      return {
+        canPrepare: false,
+        canReview: false,
+        pendingVersion: label,
+        note: `Rascunho ${label} criado. Enviar para revisão fica disponível quando o rollout atual for concluído. O rollout segue disponível.`,
+      };
+    }
+    return {
+      canPrepare: false,
+      canReview: true,
+      pendingVersion: label,
+      note: `Rascunho ${label} pronto para revisão.`,
+    };
+  }
+  if (pending) return { canPrepare: false, canReview: false, note: "", pendingVersion: label };
+  return {
+    canPrepare: true,
+    canReview: false,
+    pendingVersion: label,
+    note: blocking
+      ? `Bundle ${label} disponível. Use Preparar para definir a porcentagem e as notas, sem alterar o rollout.`
+      : `Bundle ${label} disponível. Use Preparar para definir a porcentagem e as notas.`,
+  };
+}
+
 export function mapAndroidStatus(input: {
   configured: boolean;
   latestVersionCode: number | null;
@@ -75,94 +202,124 @@ export function mapAndroidStatus(input: {
   }
 
   const latest = input.latestVersionCode;
-  const match = input.releases.find((release) =>
-    (release.versionCodes ?? []).some((code) => Number(code) === latest),
-  );
-  const releaseName = pickRicherAndroidReleaseName(latest, match?.name, input.releaseName);
-  const version = formatAndroidReleaseName(releaseName, latest);
-  const lifecycle = findLifecycleState(input.lifecycleSummaries ?? [], latest);
-
-  if (lifecycle === "RELEASE_LIFECYCLE_STATE_IN_REVIEW") {
+  const focus = pickAndroidFocus(input.releases, latest);
+  if (!focus) {
     return cell({
       platform: "android",
-      status: "em_revisao",
-      version,
-      label: "Em revisão",
-      releaseUncertain: true,
-      detail: "Em revisão na Google. Ainda não está disponível para os usuários.",
+      status: "pronta",
+      version: pendingBundleLabel(latest, input.releaseName),
+      pendingVersion: pendingBundleLabel(latest, input.releaseName),
+      canPrepare: true,
+      detail: "Bundle enviado pelo CI, ainda fora da faixa. Use Preparar para definir a porcentagem e as notas.",
     });
   }
+
+  const focusCode = releaseVersionCode(focus) ?? latest;
+  const match = focus;
+  const releaseName = pickRicherAndroidReleaseName(
+    focusCode,
+    match.name,
+    focusCode === latest ? input.releaseName : undefined,
+  );
+  const version = formatAndroidReleaseName(releaseName, focusCode);
+  const lifecycle = findLifecycleState(input.lifecycleSummaries ?? [], focusCode);
+  const pending = describeAndroidPending(input.releases, latest, focusCode, input.releaseName);
+
+  const finish = (mapped: Cell): Cell => {
+    if (!pending.note && !pending.canPrepare && !pending.canReview && !pending.pendingVersion) return mapped;
+    const detail = [mapped.detail, pending.note].filter((part) => part.trim()).join(" ");
+    return cell({
+      ...mapped,
+      canPrepare: mapped.canPrepare || pending.canPrepare,
+      canReview: mapped.canReview || pending.canReview,
+      pendingVersion: pending.pendingVersion,
+      detail,
+    });
+  };
+
+  if (lifecycle === "RELEASE_LIFECYCLE_STATE_IN_REVIEW") {
+    return finish(
+      cell({
+        platform: "android",
+        status: "em_revisao",
+        version,
+        label: "Em revisão",
+        releaseUncertain: true,
+        detail: "Em revisão na Google. Ainda não está disponível para os usuários.",
+      }),
+    );
+  }
   if (lifecycle === "RELEASE_LIFECYCLE_STATE_APPROVED_NOT_PUBLISHED") {
-    const pendingFraction = match?.userFraction;
+    const pendingFraction = match.userFraction;
     const pct =
       typeof pendingFraction === "number" && pendingFraction > 0 && pendingFraction < 1
         ? formatPercent(pendingFraction)
         : null;
-    return cell({
-      platform: "android",
-      status: "aprovada",
-      version,
-      label: "Pronto para publicar",
-      needsConsolePublish: true,
-      detail: pct
-        ? `Aprovado (${pct}). Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.`
-        : "Aprovado. Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.",
-    });
+    return finish(
+      cell({
+        platform: "android",
+        status: "aprovada",
+        version,
+        label: "Pronto para publicar",
+        needsConsolePublish: true,
+        detail: pct
+          ? `Aprovado (${pct}). Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.`
+          : "Aprovado. Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.",
+      }),
+    );
   }
   if (lifecycle === "RELEASE_LIFECYCLE_STATE_NOT_APPROVED") {
-    return cell({
-      platform: "android",
-      status: "rejeitada",
-      version,
-      detail: "Rejeitada pela Google. O Enviar todos não inclui. Marque a linha para tentar de novo.",
-    });
+    return finish(
+      cell({
+        platform: "android",
+        status: "rejeitada",
+        version,
+        detail: "Rejeitada pela Google. O Enviar todos não inclui. Marque a linha para tentar de novo.",
+      }),
+    );
   }
   if (
     lifecycle === "RELEASE_LIFECYCLE_STATE_DRAFT" ||
     lifecycle === "RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW"
   ) {
-    return cell({
-      platform: "android",
-      status: "pronta",
-      version,
-      canReview: true,
-      detail:
-        lifecycle === "RELEASE_LIFECYCLE_STATE_DRAFT"
-          ? "Release em rascunho."
-          : "Pronta para enviar à análise da Google.",
-    });
-  }
-
-  if (!match) {
-    return cell({
-      platform: "android",
-      status: "pronta",
-      version,
-      canReview: true,
-      detail: "Bundle enviado pelo CI, ainda fora da faixa.",
-    });
+    return finish(
+      cell({
+        platform: "android",
+        status: "pronta",
+        version,
+        canReview: true,
+        detail:
+          lifecycle === "RELEASE_LIFECYCLE_STATE_DRAFT"
+            ? "Release em rascunho."
+            : "Pronta para enviar à análise da Google.",
+      }),
+    );
   }
 
   if (match.status === "draft") {
-    return cell({
-      platform: "android",
-      status: "pronta",
-      version,
-      canReview: true,
-      detail: "Release em rascunho.",
-    });
+    return finish(
+      cell({
+        platform: "android",
+        status: "pronta",
+        version,
+        canReview: true,
+        detail: "Release em rascunho.",
+      }),
+    );
   }
   if (match.status === "halted") {
-    return cell({
-      platform: "android",
-      status: "pausada",
-      version,
-      canRelease: true,
-      detail: "Pausado. Só entra em Liberar se o aplicativo estiver marcado.",
-    });
+    return finish(
+      cell({
+        platform: "android",
+        status: "pausada",
+        version,
+        canRelease: true,
+        detail: "Pausado. Só entra em Liberar se o aplicativo estiver marcado.",
+      }),
+    );
   }
   if (match.status === "completed") {
-    return cell({ platform: "android", status: "liberada", version, label: "No ar 100%" });
+    return finish(cell({ platform: "android", status: "liberada", version, label: "No ar 100%" }));
   }
   if (match.status === "inProgress") {
     const fraction = match.userFraction ?? 0;
@@ -170,48 +327,56 @@ export function mapAndroidStatus(input: {
     // Só é rollout real quando a Play marca PUBLISHED. Antes disso (Pronto para publicar /
     // análise / lifecycle ausente) Liberar deve iniciar a % já definida — não completar 100%.
     if (lifecycle === "RELEASE_LIFECYCLE_STATE_PUBLISHED") {
-      return cell({
-        platform: "android",
-        status: "aprovada",
-        version,
-        label: `Rollout ${pct}`,
-        canRelease: fraction < 1,
-        canHalt: true,
-        inRollout: true,
-        detail: "Já está em rollout. Use Aumentar rollout para subir a %. A Play não deixa reduzir.",
-      });
+      return finish(
+        cell({
+          platform: "android",
+          status: "aprovada",
+          version,
+          label: `Rollout ${pct}`,
+          canRelease: fraction < 1,
+          canHalt: true,
+          inRollout: true,
+          detail: "Já está em rollout. Use Aumentar rollout para subir a %. A Play não deixa reduzir.",
+        }),
+      );
     }
     const underReview = fraction <= 0.02 || lifecycle === "RELEASE_LIFECYCLE_STATE_IN_REVIEW";
     if (underReview) {
-      return cell({
-        platform: "android",
-        status: "em_revisao",
-        version,
-        label: "Em revisão",
-        releaseUncertain: true,
-        detail: "Em revisão na Google. Ainda não está disponível para os usuários.",
-      });
+      return finish(
+        cell({
+          platform: "android",
+          status: "em_revisao",
+          version,
+          label: "Em revisão",
+          releaseUncertain: true,
+          detail: "Em revisão na Google. Ainda não está disponível para os usuários.",
+        }),
+      );
     }
-    return cell({
-      platform: "android",
-      status: "aprovada",
-      version,
-      label: "Pronto para publicar",
-      needsConsolePublish: true,
-      detail:
-        fraction > 0 && fraction < 1
-          ? `Aprovado (${pct}). Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.`
-          : "Aprovado. Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.",
-    });
+    return finish(
+      cell({
+        platform: "android",
+        status: "aprovada",
+        version,
+        label: "Pronto para publicar",
+        needsConsolePublish: true,
+        detail:
+          fraction > 0 && fraction < 1
+            ? `Aprovado (${pct}). Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.`
+            : "Aprovado. Publicação Gerenciada ativo: publique na Play Console — a API não tem essa etapa. Depois use Aumentar rollout.",
+      }),
+    );
   }
 
-  return cell({
-    platform: "android",
-    status: "pronta",
-    version,
-    canReview: true,
-    detail: `Status ${match.status ?? "desconhecido"} no Play.`,
-  });
+  return finish(
+    cell({
+      platform: "android",
+      status: "pronta",
+      version,
+      canReview: true,
+      detail: `Status ${match.status ?? "desconhecido"} no Play.`,
+    }),
+  );
 }
 
 export function withReviewRelease(
@@ -235,6 +400,13 @@ export function withReviewRelease(
     }
     if (current.status === "inProgress") {
       throw new Error(`O versionCode ${code} já está em rollout. Use Liberar ou Pausar.`);
+    }
+    const blockingOther = releases.find(
+      (release, position) =>
+        position !== index && (release.status === "inProgress" || release.status === "halted"),
+    );
+    if (blockingOther) {
+      throw new Error("Já existe um rollout aberto nessa faixa. Pause ou conclua antes de enviar outra versão.");
     }
     const { userFraction, ...rest } = current;
     void userFraction;
@@ -268,18 +440,52 @@ export function withReviewRelease(
   return [created, ...others];
 }
 
+/** Cria o rascunho do bundle novo sem alterar o rollout já aberto na faixa. */
+export function withDraftRelease(
+  releases: RawRelease[],
+  latest: number,
+  notes: string,
+  language: string,
+  releaseName?: string | null,
+): RawRelease[] {
+  const code = String(latest);
+  const existing = releases.find((release) => (release.versionCodes ?? []).map(String).includes(code));
+  if (existing) {
+    if (existing.status === "draft") {
+      throw new Error(`O versionCode ${code} já está em rascunho.`);
+    }
+    throw new Error(`O versionCode ${code} já está na faixa (${existing.status}).`);
+  }
+  const otherDraft = releases.find((release) => release.status === "draft");
+  if (otherDraft) {
+    throw new Error("Já existe um rascunho nessa faixa. Envie ou descarte antes de preparar outra versão.");
+  }
+  const name = formatAndroidReleaseName(pickRicherAndroidReleaseName(latest, releaseName), latest);
+  return [
+    {
+      name,
+      versionCodes: [code],
+      status: "draft",
+      releaseNotes: [{ language, text: notes }],
+    },
+    ...releases,
+  ];
+}
+
 /** Só é rollout real quando a Play marca a release como PUBLISHED. */
 export function isAndroidRolloutLive(
   releases: readonly RawRelease[],
   latest: number | null,
   lifecycleSummaries: readonly ReleaseSummary[] = [],
 ): boolean {
-  if (latest === null) return false;
-  const lifecycle = findLifecycleState(lifecycleSummaries, latest);
+  const open = releases.find((release) => release.status === "inProgress" || release.status === "halted");
+  const code = open ? releaseVersionCode(open) : latest;
+  if (code === null) return false;
+  const lifecycle = findLifecycleState(lifecycleSummaries, code);
   if (lifecycle !== "RELEASE_LIFECYCLE_STATE_PUBLISHED") return false;
-  const match = releases.find((release) =>
-    (release.versionCodes ?? []).some((code) => Number(code) === latest),
-  );
+  const match =
+    open ??
+    releases.find((release) => (release.versionCodes ?? []).some((item) => Number(item) === code));
   return Boolean(match && (match.status === "inProgress" || match.status === "halted"));
 }
 

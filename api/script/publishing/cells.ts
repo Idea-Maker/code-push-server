@@ -27,6 +27,8 @@ export function cell(input: {
   needsConsolePublish?: boolean;
   consoleUrl?: string | null;
   lastError?: string | null;
+  pendingVersion?: string | null;
+  plannedFraction?: number | null;
 }): Cell {
   return {
     platform: input.platform,
@@ -43,6 +45,8 @@ export function cell(input: {
     needsConsolePublish: input.needsConsolePublish ?? false,
     consoleUrl: input.consoleUrl ?? null,
     lastError: input.lastError ?? null,
+    pendingVersion: input.pendingVersion ?? null,
+    plannedFraction: input.plannedFraction ?? null,
   };
 }
 

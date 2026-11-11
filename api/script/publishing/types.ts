@@ -52,6 +52,10 @@ export type Cell = {
   /** Link da Play Console / App Store Connect quando disponível. */
   consoleUrl: string | null;
   lastError: string | null;
+  /** Bundle novo que ainda não é o status principal (rollout/no ar seguem visíveis). */
+  pendingVersion: string | null;
+  /** Porcentagem inicial escolhida na preparação do rascunho Android. */
+  plannedFraction: number | null;
 };
 
 export type BoardApp = {
@@ -73,6 +77,9 @@ export type ActionTarget = {
   releaseUncertain: boolean;
   /** Já está com parte dos usuários (rollout Play / faseado Apple). */
   inRollout: boolean;
+  version?: string;
+  pendingVersion?: string | null;
+  plannedFraction?: number | null;
 };
 
 export type SkippedTarget = ActionTarget & {
