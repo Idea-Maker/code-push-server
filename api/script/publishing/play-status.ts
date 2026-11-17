@@ -70,15 +70,54 @@ const ACTIONABLE_LIFECYCLE = new Set([
   "RELEASE_LIFECYCLE_STATE_NOT_APPROVED",
 ]);
 
+type AndroidVersionCode = {
+  major: number;
+  minor: number;
+  patch: number;
+  hotfix: number;
+};
+
+/**
+ * Padrão dos apps: major×100000000 + minor×100000 + patch×100 + hotfix.
+ * Ex.: 600500500 = 6.5.5. Código curto (4 dígitos) não entra nessa fórmula.
+ */
+export function decodeAndroidVersionCode(code: number): AndroidVersionCode | null {
+  if (!Number.isInteger(code) || code < 100_000_000 || code > 9_999_999_999) return null;
+  const major = Math.floor(code / 100_000_000);
+  const minor = Math.floor((code % 100_000_000) / 100_000);
+  const patch = Math.floor((code % 100_000) / 100);
+  const hotfix = code % 100;
+  if (major < 1 || minor > 99 || patch > 99) return null;
+  return { major, minor, patch, hotfix };
+}
+
+export function marketingVersionFromCode(code: number): string | null {
+  const decoded = decodeAndroidVersionCode(code);
+  if (!decoded) return null;
+  const base = `${decoded.major}.${decoded.minor}.${decoded.patch}`;
+  return decoded.hotfix > 0 ? `${base}.${decoded.hotfix}` : base;
+}
+
+function highestReleaseCode(releases: readonly RawRelease[]): number | null {
+  const codes = releases
+    .map((release) => releaseVersionCode(release))
+    .filter((code): code is number => code !== null);
+  if (codes.length === 0) return null;
+  return Math.max(...codes);
+}
+
 /**
  * Versão que o board pode preparar ou revisar.
- * A biblioteca de AABs guarda código antigo para sempre. Só entra aqui release
- * que a faixa ou o lifecycle da Play ainda mostram (rascunho, revisão, etc.).
+ * Rascunho e revisão da produção ganham. Com a produção no ar ou em rollout,
+ * a faixa internal (testes internos) é a base: se o versionCode de lá for
+ * maior, ele entra para preparar. A biblioteca de AABs não entra nessa conta,
+ * porque guarda código antigo que não está em faixa nenhuma.
  */
 export function versionCodeForBoard(
   bundleCodes: readonly (number | undefined)[],
   releases: readonly RawRelease[],
   lifecycleSummaries: readonly ReleaseSummary[] = [],
+  internalReleases: readonly RawRelease[] = [],
 ): number | null {
   const uploaded = bundleCodes.filter((code): code is number => typeof code === "number" && Number.isFinite(code));
   const actionable: number[] = [];
@@ -102,14 +141,18 @@ export function versionCodeForBoard(
 
   const open = releases.find((release) => release.status === "inProgress" || release.status === "halted");
   const openCode = open ? releaseVersionCode(open) : null;
-  if (openCode !== null) return openCode;
-
   const completed = releases
     .map((release) => (release.status === "completed" ? releaseVersionCode(release) : null))
     .filter((code): code is number => code !== null);
-  if (completed.length > 0) return Math.max(...completed);
+  const onTrack = openCode ?? (completed.length > 0 ? Math.max(...completed) : null);
+  const internalCode = highestReleaseCode(internalReleases);
 
-  return uploaded.length > 0 ? Math.max(...uploaded) : null;
+  if (onTrack === null) {
+    if (internalCode !== null) return internalCode;
+    return uploaded.length > 0 ? Math.max(...uploaded) : null;
+  }
+  if (internalCode !== null && internalCode > onTrack) return internalCode;
+  return onTrack;
 }
 
 /**
@@ -136,7 +179,11 @@ export function pickAndroidFocus(releases: readonly RawRelease[], latest: number
 }
 
 function pendingBundleLabel(latest: number, releaseName?: string | null): string {
-  return formatAndroidReleaseName(pickRicherAndroidReleaseName(latest, releaseName), latest);
+  const named = pickRicherAndroidReleaseName(latest, releaseName);
+  if (named && named !== String(latest) && /\d+\.\d+/.test(named)) {
+    return formatAndroidReleaseName(named, latest);
+  }
+  return formatAndroidReleaseName(marketingVersionFromCode(latest) ?? named, latest);
 }
 
 function describeAndroidPending(
@@ -176,8 +223,8 @@ function describeAndroidPending(
     canReview: false,
     pendingVersion: label,
     note: blocking
-      ? `Bundle ${label} disponível. Use Preparar para definir a porcentagem e as notas, sem alterar o rollout.`
-      : `Bundle ${label} disponível. Use Preparar para definir a porcentagem e as notas.`,
+      ? `Versão ${label} nos testes internos. Use Preparar para criar o rascunho de produção, sem alterar o rollout.`
+      : `Versão ${label} nos testes internos. Use Preparar para criar o rascunho de produção.`,
   };
 }
 

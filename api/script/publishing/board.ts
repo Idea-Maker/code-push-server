@@ -212,8 +212,22 @@ function isRateLimitMessage(message: string): boolean {
   return /too many requests|rate limit|try again later|slow down your request/i.test(message);
 }
 
-function keepPreviousOnRateLimit(previous: Cell | undefined, detail: string): Cell | null {
-  if (!previous || !isRateLimitMessage(detail)) return null;
+/** Erros transitórios da Apple/Play: vale retry e, se ainda falhar, manter o status anterior. */
+function isTransientStoreMessage(message: string): boolean {
+  return (
+    isRateLimitMessage(message) ||
+    /unexpected error occurred on the server side/i.test(message) ||
+    /operation was aborted due to timeout/i.test(message) ||
+    /aborted due to timeout/i.test(message) ||
+    /^fetch failed$/i.test(message.trim()) ||
+    /network|ECONNRESET|ETIMEDOUT|socket hang up|UND_ERR_CONNECT_TIMEOUT/i.test(message) ||
+    /App Store Connect respondeu 5\d\d/i.test(message) ||
+    /\b(502|503|504)\b/.test(message)
+  );
+}
+
+function keepPreviousOnTransient(previous: Cell | undefined, detail: string): Cell | null {
+  if (!previous || !isTransientStoreMessage(detail)) return null;
   if (previous.status === "erro" || previous.status === "sem_build" || previous.status === "indisponivel") {
     return null;
   }
@@ -221,20 +235,26 @@ function keepPreviousOnRateLimit(previous: Cell | undefined, detail: string): Ce
     ...previous,
     lastError: detail,
     detail: previous.detail
-      ? `${previous.detail} · Leitura limitada pela loja; mantido o status anterior.`
-      : "Leitura limitada pela loja; mantido o status anterior.",
+      ? `${previous.detail} · Loja instável na leitura; mantido o status anterior.`
+      : "Loja instável na leitura; mantido o status anterior.",
   });
 }
 
-async function readStoreWithRetry(read: () => Promise<Cell>): Promise<Cell> {
-  try {
-    return await read();
-  } catch (error) {
-    const first = describeError(error);
-    if (!isRateLimitMessage(first)) throw error;
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-    return read();
+async function readStoreWithRetry(read: () => Promise<Cell>, attempts = 3): Promise<Cell> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await read();
+    } catch (error) {
+      lastError = error;
+      const message = describeError(error);
+      if (attempt >= attempts || !isTransientStoreMessage(message)) throw error;
+      const waitMs = 1_500 * attempt;
+      logger.warn({ attempt, attempts, waitMs, message }, "loja instável; nova tentativa");
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
   }
+  throw lastError;
 }
 
 async function readAndroidCell(
@@ -252,7 +272,7 @@ async function readAndroidCell(
       `falha ao consultar ${app.name}`,
     );
     return (
-      keepPreviousOnRateLimit(previous, detail) ??
+      keepPreviousOnTransient(previous, detail) ??
       cell({
         platform: "android",
         status: "erro",
@@ -282,7 +302,7 @@ async function readIosCell(
     );
     return withIosConsoleUrl(
       app,
-      keepPreviousOnRateLimit(previous, detail) ??
+      keepPreviousOnTransient(previous, detail) ??
         cell({
           platform: "ios",
           status: "erro",

@@ -115,12 +115,16 @@ async function openTrack(app: AppConfig): Promise<OpenedTrack> {
       listLifecycleSummaries(packageName, track),
     ]);
     const releases = trackBody.releases ?? [];
+    const tracks = allTracks.tracks ?? [];
+    const internalReleases =
+      track === "internal" ? [] : tracks.find((item) => item.track === "internal")?.releases ?? [];
     const latest = versionCodeForBoard(
       (bundles.bundles ?? []).map((bundle) => bundle.versionCode),
       releases,
       lifecycleSummaries,
+      internalReleases,
     );
-    const otherReleases = (allTracks.tracks ?? []).flatMap((item) => item.releases ?? []);
+    const otherReleases = tracks.flatMap((item) => item.releases ?? []);
     const releaseName =
       latest === null
         ? null

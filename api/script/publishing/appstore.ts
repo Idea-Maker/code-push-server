@@ -109,7 +109,7 @@ async function apple<T>(pathname: string, init?: { method?: string; body?: unkno
         "Content-Type": "application/json",
       },
       body: init?.body === undefined ? undefined : JSON.stringify(init.body),
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(60_000),
     });
   } catch (error) {
     throw new Error(describeError(error));
